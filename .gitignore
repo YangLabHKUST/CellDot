@@ -1,0 +1,26 @@
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.ipynb_checkpoints/
+
+# envs
+.venv/
+venv/
+.env
+
+# os / editor
+.DS_Store
+.vscode/
+.idea/
+
+# data / large artifacts (never commit)
+*.h5ad
+*.npz
+*.parquet
+*.mtx
+*.png
+*.pdf

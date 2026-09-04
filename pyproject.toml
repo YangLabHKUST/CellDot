@@ -1,0 +1,36 @@
+[project]
+name = "celldot"
+version = "0.1.0"
+description = "CellDot: reference-guided optimal-transport decontamination for imaging-based spatial transcriptomics"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "scipy",
+    "pandas",
+    "torch",
+    "anndata",
+    "pyarrow",
+    "scikit-learn",
+    "scanpy",
+]
+
+[project.scripts]
+celldot = "celldot.__main__:main"
+celldot-view = "celldot.viewer.__main__:main"
+celldot-convert = "celldot.convert:main"
+
+[project.optional-dependencies]
+viewer = ["duckdb>=0.10", "fastapi", "uvicorn", "h5py"]   # celldot-view
+xenium2 = ["scikit-image"]      # post-dilation background on Xenium 2.0 segmentations (engine.dilated_background)
+dev = ["matplotlib", "shapely"]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["celldot", "celldot.viewer"]
+
+[tool.setuptools.package-data]
+"celldot.viewer" = ["web/*.html", "web/vendor/*.js"]

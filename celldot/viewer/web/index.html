@@ -1,0 +1,408 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>CellDot viewer</title>
+<style>
+  :root { --bg:#0b0d12; --panel:#141821; --line:#262c38; --fg:#e8eaf0; --mut:#98a2b3; --acc:#4f8ef7; --keep:#8a8f98; --move:#2f8fe0; --drop:#e5484d; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--fg); font:13px/1.45 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; overflow:hidden; }
+  #map { position:absolute; inset:0; }
+  #panel { position:absolute; top:12px; left:12px; width:300px; max-height:calc(100% - 24px); overflow:auto; background:rgba(20,24,33,.95);
+           border:1px solid var(--line); border-radius:12px; padding:12px 14px; backdrop-filter:blur(8px); }
+  #panel h1 { font-size:15px; margin:0; letter-spacing:.01em; }
+  #panel .sub { color:var(--mut); font-size:11.5px; margin:2px 0 8px; }
+  .sec { border-top:1px solid var(--line); padding:9px 0 5px; }
+  .sec h2 { font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; color:var(--mut); margin:0 0 6px; display:flex; justify-content:space-between; }
+  input[type=text], select { width:100%; background:#0e1117; border:1px solid var(--line); color:var(--fg); border-radius:7px; padding:5px 8px; font-size:12.5px; }
+  input[type=range] { flex:1; accent-color:var(--acc); }
+  .chips { display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; }
+  .chip { background:#222838; border:1px solid var(--line); border-radius:12px; padding:1px 8px; font-size:11.5px; cursor:pointer; white-space:nowrap; }
+  .chip:hover { border-color:var(--drop); }
+  .row { display:flex; align-items:center; gap:7px; margin:4px 0; flex-wrap:wrap; }
+  .row label { cursor:pointer; display:inline-flex; align-items:center; gap:4px; }
+  .seg { display:flex; border:1px solid var(--line); border-radius:7px; overflow:hidden; width:100%; }
+  .seg button { flex:1; background:#0e1117; color:var(--fg); border:0; padding:4px 6px; cursor:pointer; font-size:12px; }
+  .seg button.on { background:var(--acc); color:#fff; }
+  .sw { width:11px; height:11px; border-radius:3px; display:inline-block; vertical-align:middle; }
+  .mut { color:var(--mut); } .small { font-size:11px; }
+  button.btn { background:#222838; border:1px solid var(--line); color:var(--fg); border-radius:7px; padding:4px 9px; cursor:pointer; font-size:12px; }
+  button.btn:hover { border-color:var(--acc); }
+  #info { position:absolute; bottom:12px; left:12px; width:300px; max-height:46%; overflow:auto; background:rgba(20,24,33,.96); border:1px solid var(--line);
+          border-radius:12px; padding:10px 14px; display:none; }
+  #info table { width:100%; border-collapse:collapse; font-size:11.5px; font-variant-numeric:tabular-nums; }
+  #info td, #info th { padding:1px 3px; text-align:right; } #info td:first-child, #info th:first-child { text-align:left; }
+  #info th { color:var(--mut); font-weight:normal; border-bottom:1px solid var(--line); }
+  #status { position:absolute; top:12px; right:12px; background:rgba(20,24,33,.92); border:1px solid var(--line); border-radius:9px; padding:6px 10px;
+            font-size:11.5px; color:var(--mut); text-align:right; line-height:1.5; font-variant-numeric:tabular-nums; }
+  #status b { color:var(--fg); font-weight:600; }
+  #scale { position:absolute; bottom:14px; right:14px; color:var(--fg); font-size:11px; text-align:center; }
+  #scale .bar { height:4px; background:#fff; border:1px solid #000; margin-bottom:3px; }
+  #legend { font-size:11.5px; }
+  #legend .t { display:flex; align-items:center; gap:6px; margin:1px 0; cursor:pointer; } #legend .t.off { opacity:.35; }
+  .ramp { height:9px; border-radius:3px; margin:4px 0 2px; }
+  .kbd { font-family:ui-monospace,Menlo,monospace; background:#222838; border:1px solid var(--line); border-radius:4px; padding:0 4px; font-size:10.5px; }
+  #toast { position:absolute; left:50%; top:14px; transform:translateX(-50%); background:#1c2230; border:1px solid var(--line); border-radius:8px; padding:6px 12px; display:none; }
+</style>
+<div id="map"></div>
+<div id="panel">
+  <h1 id="ttl">CellDot viewer</h1>
+  <div class="sub" id="counts">loading…</div>
+
+  <div class="sec">
+    <h2>Find</h2>
+    <input id="find" type="text" placeholder="cell id, or x,y coordinates — Enter" autocomplete="off">
+    <div class="row small mut" style="margin-top:5px">Click a cell to see the fate of each of its molecules.</div>
+  </div>
+
+  <div class="sec">
+    <h2>Molecules <span><span id="ngsel">0</span> genes</span></h2>
+    <input id="gene" type="text" list="genelist" placeholder="type a gene, Enter to add…" autocomplete="off">
+    <datalist id="genelist"></datalist>
+    <div class="chips" id="chips"></div>
+    <div class="row" style="margin-top:6px"><label><input type="checkbox" id="allgenes" checked> show all genes when zoomed in (&lt; <span id="allw">800</span> µm)</label></div>
+    <div class="row"><span class="mut small" style="width:52px">colour</span>
+      <div class="seg" id="txmode" style="flex:1"><button data-v="fate" class="on">fate</button><button data-v="gene">gene</button></div></div>
+    <div class="row" id="fatefilter">
+      <label><input type="checkbox" data-f="0" checked><span class="sw" style="background:var(--keep)"></span>keep</label>
+      <label><input type="checkbox" data-f="1" checked><span class="sw" style="background:var(--move)"></span>move</label>
+      <label><input type="checkbox" data-f="2" checked><span class="sw" style="background:var(--drop)"></span>drop</label>
+    </div>
+    <div class="row"><label><input type="checkbox" id="arrows" checked> arrows: moved molecule → new cell</label></div>
+    <div class="row"><span class="mut small" style="width:52px">size</span><input type="range" id="psize" min="0.6" max="7" step="0.2" value="2.2"></div>
+  </div>
+
+  <div class="sec">
+    <h2>Cells</h2>
+    <div class="row"><span class="mut small" style="width:52px">colour</span>
+      <select id="cellmode" style="flex:1">
+        <option value="type">cell type</option>
+        <option value="clean">expression, cleaned</option>
+        <option value="raw">expression, raw</option>
+        <option value="delta">expression change (cleaned − raw)</option>
+        <option value="dropfrac">fraction of molecules dropped</option>
+        <option value="movefrac">fraction moved out</option>
+        <option value="none">no fill</option>
+      </select></div>
+    <div class="row" id="exprrow" style="display:none"><span class="mut small" style="width:52px">gene</span><input id="exprgene" type="text" list="genelist" placeholder="gene for the fill" style="flex:1" autocomplete="off"></div>
+    <div class="row"><label><input type="checkbox" id="outlines" checked> outlines</label>
+      <span class="mut small" style="margin-left:8px">opacity</span><input type="range" id="fillop" min="0.1" max="1" step="0.05" value="0.75" style="max-width:110px"></div>
+    <div id="legend"></div>
+  </div>
+
+  <div class="sec">
+    <h2>View</h2>
+    <div class="row"><button class="btn" id="fit">fit to tissue</button><button class="btn" id="shot">save PNG</button><button class="btn" id="clear">clear selection</button></div>
+    <div class="row small mut"><span class="kbd">F</span> fit &nbsp; <span class="kbd">Esc</span> clear &nbsp; <span class="kbd">A</span> arrows &nbsp; scroll / drag to zoom and pan</div>
+  </div>
+</div>
+<div id="info"></div>
+<div id="status">loading…</div>
+<div id="scale"><div class="bar" id="scalebar"></div><span id="scaletxt"></span></div>
+<div id="toast"></div>
+<script src="/web/vendor/deck.gl.min.js"></script>
+<script>
+const {DeckGL, OrthographicView, PolygonLayer, SolidPolygonLayer, PathLayer, ScatterplotLayer, LineLayer} = deck;
+const $ = s => document.querySelector(s);
+const FATE_COL = [[138,143,152],[47,143,224],[229,72,77]], FATE_NAME = ["keep","move","drop"];
+const POLY_MAX_W = 3500, ALL_GENES_W = 800, SUMMARY_W = 2500;     // viewport widths (µm) that switch level of detail
+let META, GENES, GIDX = {}, C = null, NT = 0, NRUN = 0, TYPECOL = [], typeOff = new Set();
+let selGenes = [], txMode = "fate", cellMode = "type", exprGene = null, EXPR = {raw:null, clean:null, gene:null, vmax:1};
+let POLYS = null, TX = null, FOCUS = null, deckgl, timers = {}, ctrl = {}, lastKey = {}, viewW = 1e9;
+const hexRGB = h => [parseInt(h.slice(1,3),16), parseInt(h.slice(3,5),16), parseInt(h.slice(5,7),16)];
+const fmt = n => n.toLocaleString();
+
+// ---------- binary transport ----------
+const TYPES = {f32:[Float32Array,4], i32:[Int32Array,4], i16:[Int16Array,2], u8:[Uint8Array,1], i8:[Int8Array,1], u32:[Uint32Array,4]};
+async function fetchBin(url, key){
+  if(key){ if(ctrl[key]) ctrl[key].abort(); ctrl[key] = new AbortController(); }
+  const r = await fetch(url, key ? {signal: ctrl[key].signal} : {}); const buf = await r.arrayBuffer();
+  const dv = new DataView(buf), hl = dv.getUint32(0, true);
+  const hdr = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, hl))); let off = 4 + hl; const out = {hdr};
+  for(const [name, dt, n] of hdr.fields){ const [T, b] = TYPES[dt]; out[name] = new T(buf.slice(off, off + n*b)); off += n*b; }
+  return out;
+}
+function toast(msg, ms=2500){ const t = $("#toast"); t.textContent = msg; t.style.display = "block"; clearTimeout(timers.toast); timers.toast = setTimeout(()=>t.style.display="none", ms); }
+
+// ---------- boot ----------
+async function boot(){
+  META = await (await fetch("/api/meta")).json();
+  GENES = (await (await fetch("/api/genes")).json()).names; GENES.forEach((g,i)=>GIDX[g]=i);
+  TYPECOL = META.type_colors.map(hexRGB);
+  document.title = "CellDot · " + META.dataset; $("#ttl").textContent = "CellDot · " + META.dataset;
+  $("#counts").innerHTML = `${fmt(META.n_cells)} cells · ${fmt(META.n_tx)} molecules · ${fmt(META.n_genes)} genes` +
+    (META.provenance && META.provenance.run_id ? `<br>run ${META.provenance.run_id} · v${META.provenance.version}` : "");
+  $("#genelist").innerHTML = GENES.slice(0, 20000).map(g=>`<option value="${g}">`).join("");
+  $("#allw").textContent = ALL_GENES_W;
+  C = await fetchBin("/api/cells"); NT = C.hdr.n; NRUN = C.hdr.n_run;
+  C.pos2 = new Float32Array(NT*2); for(let i=0;i<NT;i++){ C.pos2[2*i]=C.cx[i]; C.pos2[2*i+1]=C.cy[i]; }
+  drawLegend();
+  const e = META.extent;
+  const H = readHash(); const iv = H.view || fitView();
+  deckgl = new DeckGL({
+    container: "map", views: [new OrthographicView({flipY: true})],
+    initialViewState: iv, controller: {inertia: 200},
+    onViewStateChange: ({viewState}) => { onView(viewState); },
+    getTooltip: tooltip, layers: [],
+  });
+  onView(iv); render();
+  if(H.genes) H.genes.forEach(g=>selGenes.push(GIDX[g]));
+  else ["EPCAM","KRT8","PTPRC","CD3E","COL1A1","Gfap","Epcam"].forEach(g=>{ if(GIDX[g]!==undefined && selGenes.length<2) selGenes.push(GIDX[g]); });
+  renderChips(); scheduleAll();
+}
+function fitView(){
+  const e = META.extent, w = e.xmax - e.xmin, h = e.ymax - e.ymin;
+  return {target: [(e.xmin+e.xmax)/2, (e.ymin+e.ymax)/2, 0], zoom: Math.log2(Math.min(innerWidth/w, innerHeight/h)) - 0.15};
+}
+function flyTo(x, y, zoom){ deckgl.setProps({initialViewState: {target:[x, y, 0], zoom: zoom ?? Math.max(currentZoom(), 3.5), transitionDuration: 700}}); }
+function viewport(){ try { return deckgl.getViewports()[0] || null; } catch(e){ return null; } }   // null before the first frame
+function currentZoom(){ const vp = viewport(); return vp ? vp.zoom : (VS ? VS.zoom : 0); }
+let VS = null;
+
+// ---------- viewport bookkeeping ----------
+function bbox(margin=0.08){
+  const vp = viewport(); if(!vp) return null;
+  const a = vp.unproject([0,0]), b = vp.unproject([vp.width, vp.height]);
+  const w = Math.abs(b[0]-a[0]), h = Math.abs(b[1]-a[1]);
+  return {xmin: Math.min(a[0],b[0]) - w*margin, xmax: Math.max(a[0],b[0]) + w*margin, ymin: Math.min(a[1],b[1]) - h*margin, ymax: Math.max(a[1],b[1]) + h*margin, w, h};
+}
+function onView(vs){
+  VS = vs; const vp = viewport(); viewW = (vp ? vp.width : innerWidth) / Math.pow(2, vs.zoom);
+  scaleBar(vs.zoom); scheduleAll(); pushHash();
+}
+// shareable view state in the URL: #x=…&y=…&zoom=…&genes=A,B
+function pushHash(){ clearTimeout(timers.hash); timers.hash = setTimeout(()=>{ if(!VS) return;
+  const h = `#x=${VS.target[0].toFixed(1)}&y=${VS.target[1].toFixed(1)}&zoom=${VS.zoom.toFixed(2)}` + (selGenes.length ? `&genes=${selGenes.map(i=>GENES[i]).join(",")}` : "");
+  history.replaceState(null, "", h); }, 300); }
+function readHash(){ const q = new URLSearchParams(location.hash.slice(1)); const o = {};
+  if(q.has("x") && q.has("y") && q.has("zoom")) o.view = {target:[+q.get("x"), +q.get("y"), 0], zoom: +q.get("zoom")};
+  if(q.get("genes")) o.genes = q.get("genes").split(",").map(g=>g.trim()).filter(g=>GIDX[g] !== undefined);
+  return o; }
+function scaleBar(zoom){
+  const pxPerUm = Math.pow(2, zoom); const target = 140 / pxPerUm;           // µm for ~140 px
+  const nice = [1,2,5].map(m=>m*Math.pow(10, Math.floor(Math.log10(target)))).concat([10*Math.pow(10, Math.floor(Math.log10(target)))]);
+  const L = nice.reduce((p,c)=>Math.abs(c-target)<Math.abs(p-target)?c:p);
+  $("#scalebar").style.width = (L*pxPerUm) + "px"; $("#scaletxt").textContent = L >= 1000 ? (L/1000)+" mm" : L+" µm";
+}
+function scheduleAll(){ clearTimeout(timers.all); timers.all = setTimeout(()=>{ fetchPolys(); fetchTx(); fetchSummary(); }, 140); }
+
+// ---------- cells: polygons in view (LOD) ----------
+async function fetchPolys(){
+  const bb = bbox(); if(!bb) return;
+  if(viewW > POLY_MAX_W){ if(POLYS){ POLYS = null; render(); } lastKey.polys = ""; return; }
+  const url = `/api/polys?xmin=${bb.xmin.toFixed(1)}&xmax=${bb.xmax.toFixed(1)}&ymin=${bb.ymin.toFixed(1)}&ymax=${bb.ymax.toFixed(1)}&limit=90000`;
+  if(url === lastKey.polys) return; lastKey.polys = url;
+  let d; try { d = await fetchBin(url, "polys"); } catch(e){ return; }
+  // deck.gl binary polygons (_normalize:false): every ring closed (first vertex repeated) and counter-clockwise
+  const n = d.hdr.n, nv = d.nv, xy = d.xy, out = new Float32Array(xy.length + 2*n), start = new Uint32Array(n+1); let src = 0, dst = 0;
+  for(let k=0;k<n;k++){ const m = nv[k]; let area = 0;
+    for(let j=0;j<m;j++){ const x0=xy[src+2*j], y0=xy[src+2*j+1], x1=xy[src+2*((j+1)%m)], y1=xy[src+2*((j+1)%m)+1]; area += x0*y1 - x1*y0; }
+    start[k] = dst/2;
+    if(area >= 0){ for(let j=0;j<m;j++){ out[dst++] = xy[src+2*j]; out[dst++] = xy[src+2*j+1]; } }
+    else { for(let j=m-1;j>=0;j--){ out[dst++] = xy[src+2*j]; out[dst++] = xy[src+2*j+1]; } }
+    out[dst++] = out[start[k]*2]; out[dst++] = out[start[k]*2+1]; src += 2*m; }
+  start[n] = dst/2;
+  POLYS = {n, pos: d.pos, xy: out.subarray(0, dst), start, sampled: d.hdr.sampled};
+  render(); status();
+}
+
+// ---------- molecules in view ----------
+function txQuery(){
+  const bb = bbox(); if(!bb) return null;
+  const fates = [...document.querySelectorAll("#fatefilter input:checked")].map(c=>c.dataset.f).join(",");
+  const all = $("#allgenes").checked && viewW <= ALL_GENES_W;
+  if(!all && !selGenes.length) return {empty:true};
+  return {url: `/api/transcripts?xmin=${bb.xmin.toFixed(1)}&xmax=${bb.xmax.toFixed(1)}&ymin=${bb.ymin.toFixed(1)}&ymax=${bb.ymax.toFixed(1)}&genes=${selGenes.join(",")}&fates=${fates||"9"}&all=${all?1:0}&limit=250000`, all};
+}
+async function fetchTx(){
+  const qq = txQuery(); if(!qq) return;
+  if(qq.empty){ TX = null; lastKey.tx = ""; render(); status(); return; }
+  if(qq.url === lastKey.tx) return; lastKey.tx = qq.url;
+  let d; try { d = await fetchBin(qq.url, "tx"); } catch(e){ return; }
+  const n = d.hdr.n, pos = new Float32Array(n*2); for(let k=0;k<n;k++){ pos[2*k]=d.x[k]; pos[2*k+1]=d.y[k]; }
+  TX = {n, pos, gene: d.gene, act: d.act, old: d.old, nw: d.new, sampled: d.hdr.sampled, total: d.hdr.total, all: qq.all};
+  render(); status();
+}
+async function fetchSummary(){
+  const bb = bbox(0); if(!bb) return;
+  if(viewW > SUMMARY_W){ SUMMARY = null; status(); return; }
+  const url = `/api/summary?xmin=${bb.xmin.toFixed(1)}&xmax=${bb.xmax.toFixed(1)}&ymin=${bb.ymin.toFixed(1)}&ymax=${bb.ymax.toFixed(1)}`;
+  if(url === lastKey.sum) return; lastKey.sum = url;
+  clearTimeout(timers.sum); timers.sum = setTimeout(async ()=>{ try { SUMMARY = await (await fetch(url)).json(); status(); } catch(e){} }, 350);
+}
+let SUMMARY = null;
+function status(){
+  const f = SUMMARY || META.fate, tot = f.keep + f.move + f.drop;
+  const scope = SUMMARY ? "in view" : "whole section";
+  const pct = k => tot ? (100*f[k]/tot).toFixed(1) + "%" : "–";
+  let s = `<b>${fmt(tot)}</b> molecules ${scope}: keep <b>${pct("keep")}</b> · move <b>${pct("move")}</b> · drop <b>${pct("drop")}</b><br>`;
+  s += POLYS ? `${fmt(POLYS.n)} cell polygons${POLYS.sampled ? " (sampled)" : ""}` : `cells as points (zoom in below ${fmt(POLY_MAX_W)} µm for polygons)`;
+  if(TX) s += `<br>${fmt(TX.n)}${TX.sampled ? " of " + fmt(TX.total) : ""} molecules drawn${TX.all ? " (all genes)" : ""}${TX.sampled ? " · sampled" : ""}`;
+  else if(!selGenes.length) s += `<br><span style="color:#e8a33d">add a gene, or zoom in below ${ALL_GENES_W} µm, to see molecules</span>`;
+  s += `<br>view width ${viewW >= 1000 ? (viewW/1000).toFixed(2)+" mm" : viewW.toFixed(0)+" µm"}`;
+  $("#status").innerHTML = s;
+}
+
+// ---------- colours ----------
+const geneColorCache = {};
+function geneColor(g){ if(geneColorCache[g]) return geneColorCache[g]; const h = (g*137.508) % 360; return geneColorCache[g] = hsl(h, 70, 58); }
+function hsl(h,s,l){ s/=100; l/=100; const k=n=>(n+h/30)%12, a=s*Math.min(l,1-l), f=n=>l-a*Math.max(-1,Math.min(k(n)-3,9-k(n),1)); return [255*f(0),255*f(8),255*f(4)].map(Math.round); }
+const VIRIDIS = [[68,1,84],[72,40,120],[62,74,137],[49,104,142],[38,130,142],[31,158,137],[53,183,121],[109,205,89],[180,222,44],[253,231,37]];
+const MAGMA = [[0,0,4],[28,16,68],[79,18,123],[129,37,129],[181,54,122],[229,80,100],[251,135,97],[254,194,135],[252,253,191]];
+function ramp(R, t){ t = Math.max(0, Math.min(1, t)) * (R.length-1); const i = Math.floor(t), f = t - i, a = R[i], b = R[Math.min(i+1, R.length-1)]; return [a[0]+(b[0]-a[0])*f, a[1]+(b[1]-a[1])*f, a[2]+(b[2]-a[2])*f]; }
+function diverge(t){ // -1..1 -> blue..white..red
+  t = Math.max(-1, Math.min(1, t)); return t < 0 ? [255*(1+t)+33*(-t), 255*(1+t)+102*(-t), 255*(1+t)+172*(-t)] : [255*(1-t)+178*t, 255*(1-t)+24*t, 255*(1-t)+43*t]; }
+function cellColor(p, alpha){
+  if(p >= NRUN || !C.in_run[p]) return [70,74,84, alpha*0.6];
+  if(cellMode === "type"){ const t = C.type[p]; if(typeOff.has(t)) return [0,0,0,0]; const c = TYPECOL[t] || [150,150,150]; return [c[0],c[1],c[2],alpha]; }
+  if(cellMode === "none") return [0,0,0,0];
+  if(cellMode === "dropfrac"){ const n = C.n_raw[p]; return n ? [...ramp(MAGMA, Math.min(1, C.n_drop[p]/n*2.5)), alpha] : [40,44,54,alpha]; }
+  if(cellMode === "movefrac"){ const n = C.n_raw[p]; return n ? [...ramp(MAGMA, Math.min(1, C.n_out[p]/n*2.5)), alpha] : [40,44,54,alpha]; }
+  if(!EXPR.raw) return [40,44,54,alpha];
+  const r = EXPR.raw[p], c = EXPR.clean[p];
+  if(cellMode === "delta"){ const d = c - r; return [...diverge(Math.sign(d)*Math.log1p(Math.abs(d))/Math.log1p(EXPR.vmax)), alpha]; }
+  const v = cellMode === "raw" ? r : c; return v > 0 ? [...ramp(VIRIDIS, Math.log1p(v)/Math.log1p(EXPR.vmax)), alpha] : [30,32,40,alpha];
+}
+function txColor(k){ return txMode === "fate" ? FATE_COL[TX.act[k]] : geneColor(TX.gene[k]); }
+
+// ---------- layers ----------
+function render(){
+  if(!deckgl || !C) return;
+  const layers = [], alpha = Math.round(255*+$("#fillop").value), outlines = $("#outlines").checked, psize = +$("#psize").value;
+  // all cells as points (whole-section overview; when polygons are shown, only cells lacking a polygon)
+  if(!POLYS){
+    const col = new Uint8Array(NT*4);
+    for(let p=0;p<NT;p++){ const c = cellColor(p, alpha); col[4*p]=c[0]; col[4*p+1]=c[1]; col[4*p+2]=c[2]; col[4*p+3]=c[3]; }
+    layers.push(new ScatterplotLayer({ id:"cellpts", data:{length: NT, attributes:{ getPosition:{value:C.pos2, size:2}, getFillColor:{value:col, size:4} }},
+      radiusUnits:"meters", getRadius: 4.5, radiusMinPixels: 1.2, radiusMaxPixels: 9, pickable:true, onClick: i => i.index >= 0 && selectCell(i.index),
+      updateTriggers:{getFillColor:[cellMode, alpha, exprGene, EXPR.gene, typeOff.size]} }));
+  } else {
+    // binary polygons (flat XY + startIndices, _normalize:false): attributes are PER VERTEX, so expand each polygon's colour over its ring
+    const n = POLYS.n, nvert = POLYS.start[n], col = new Uint8Array(nvert*4);
+    for(let k=0;k<n;k++){ const c = cellColor(POLYS.pos[k], alpha); for(let v=POLYS.start[k]; v<POLYS.start[k+1]; v++){ col[4*v]=c[0]; col[4*v+1]=c[1]; col[4*v+2]=c[2]; col[4*v+3]=c[3]; } }
+    layers.push(new SolidPolygonLayer({ id:"polys", data:{length:n, startIndices:POLYS.start, attributes:{ getPolygon:{value:POLYS.xy, size:2}, getFillColor:{value:col, size:4} }},
+      _normalize:false, positionFormat:"XY", filled: cellMode !== "none", pickable:true, onClick: i => i.index >= 0 && selectCell(POLYS.pos[i.index]),
+      updateTriggers:{getFillColor:[cellMode, alpha, exprGene, EXPR.gene, typeOff.size, POLYS]} }));
+    if(outlines) layers.push(new PathLayer({ id:"outlines", data:{length:n, startIndices:POLYS.start, attributes:{ getPath:{value:POLYS.xy, size:2} }},
+      _pathType:"open", positionFormat:"XY", getColor:[190,196,210,150], widthUnits:"pixels", getWidth:0.8, pickable:false }));
+  }
+  if(TX && TX.n){
+    const n = TX.n, col = new Uint8Array(n*4);
+    for(let k=0;k<n;k++){ const c = txColor(k); col[4*k]=c[0]; col[4*k+1]=c[1]; col[4*k+2]=c[2]; col[4*k+3]=230; }
+    if($("#arrows").checked){
+      const src=[], tgt=[]; for(let k=0;k<n;k++){ if(TX.act[k]===1){ const t = TX.nw[k]; if(t>=0){ src.push(TX.pos[2*k], TX.pos[2*k+1]); tgt.push(C.cx[t], C.cy[t]); } } }
+      if(src.length) layers.push(new LineLayer({ id:"arrows", data:{length:src.length/2, attributes:{ getSourcePosition:{value:new Float32Array(src), size:2}, getTargetPosition:{value:new Float32Array(tgt), size:2} }},
+        getColor:[47,143,224,110], widthUnits:"pixels", getWidth:0.8 }));
+    }
+    const r = psize * Math.min(1, 2500 / Math.max(viewW, 1));            // dots shrink on wide views so cells stay visible
+    layers.push(new ScatterplotLayer({ id:"tx", data:{length:n, attributes:{ getPosition:{value:TX.pos, size:2}, getFillColor:{value:col, size:4} }},
+      radiusUnits:"pixels", getRadius: r, radiusMinPixels: 0.4, pickable: n <= 400000, updateTriggers:{getFillColor:[txMode], getRadius:[r]} }));
+  }
+  if(FOCUS){
+    const f = FOCUS;
+    if(f.poly) layers.push(new PolygonLayer({ id:"focuspoly", data:[f.poly], getPolygon:d=>d, filled:false, stroked:true, getLineColor:[255,255,255,230], lineWidthUnits:"pixels", getLineWidth:2.5 }));
+    if(f.tx){
+      const m = f.tx, n = m.n, col = new Uint8Array(n*4), src=[], tgt=[];
+      for(let k=0;k<n;k++){ const c = FATE_COL[m.act[k]]; col[4*k]=c[0]; col[4*k+1]=c[1]; col[4*k+2]=c[2]; col[4*k+3]=255;
+        if(m.act[k]===1){ const t = m.nw[k]; if(t>=0){ src.push(m.pos[2*k], m.pos[2*k+1]); tgt.push(C.cx[t], C.cy[t]); } } }
+      if(src.length) layers.push(new LineLayer({ id:"focusarrows", data:{length:src.length/2, attributes:{ getSourcePosition:{value:new Float32Array(src), size:2}, getTargetPosition:{value:new Float32Array(tgt), size:2} }}, getColor:[47,143,224,230], widthUnits:"pixels", getWidth:1.6 }));
+      layers.push(new ScatterplotLayer({ id:"focustx", data:{length:n, attributes:{ getPosition:{value:m.pos, size:2}, getFillColor:{value:col, size:4} }},
+        radiusUnits:"pixels", getRadius: psize + 1.6, stroked:true, getLineColor:[0,0,0,200], lineWidthMinPixels:1, pickable:true }));
+    }
+  }
+  deckgl.setProps({layers});
+}
+
+// ---------- tooltips ----------
+function tooltip(i){
+  if(!i.picked) return null;
+  const st = {backgroundColor:"#1c2230", color:"#e8eaf0", fontSize:"12px", padding:"6px 8px", borderRadius:"6px", border:"1px solid #262c38"};
+  if(i.layer.id === "tx" || i.layer.id === "focustx"){
+    const m = i.layer.id === "tx" ? TX : FOCUS.tx, k = i.index, o = m.old[k], t = m.nw[k];
+    const from = o >= 0 ? `${typeName(o)} #${o}` : "?", to = m.act[k] === 2 ? "background (removed)" : (m.act[k] === 0 ? "same cell" : `${typeName(t)} #${t}`);
+    return {html: `<b>${GENES[m.gene[k]]}</b> · <span style="color:rgb(${FATE_COL[m.act[k]]})">${FATE_NAME[m.act[k]]}</span><br>from ${from}<br>to ${to}`, style: st};
+  }
+  const p = i.layer.id === "polys" ? POLYS.pos[i.index] : i.index; if(p === undefined) return null;
+  if(!C.in_run[p]) return {html: `cell not in the run (no label)`, style: st};
+  let ex = ""; if(EXPR.raw && exprGene !== null) ex = `<br>${GENES[exprGene]}: raw ${C && EXPR.raw[p]} → cleaned ${EXPR.clean[p]}`;
+  return {html: `<b>${typeName(p)}</b> · cell #${p}<br>molecules raw ${fmt(C.n_raw[p])} → cleaned ${fmt(C.n_clean[p])}<br>moved in ${C.n_in[p]} · out ${C.n_out[p]} · dropped ${C.n_drop[p]}${ex}<br><span style="color:#98a2b3">click for details</span>`, style: st};
+}
+function typeName(p){ const t = C.type[p]; return t >= 0 ? META.types[t] : "unlabelled"; }
+
+// ---------- selected cell ----------
+async function selectCell(pos){
+  const d = await (await fetch(`/api/cell?pos=${pos}`)).json();
+  let poly = null; if(POLYS){ for(let k=0;k<POLYS.n;k++) if(POLYS.pos[k]===pos){ const s=POLYS.start[k]*2, e=POLYS.start[k+1]*2; poly = []; for(let j=s;j<e;j+=2) poly.push([POLYS.xy[j], POLYS.xy[j+1]]); break; } }
+  FOCUS = {pos, cell: d, poly, tx: null};
+  if(d.in_run){ const m = await fetchBin(`/api/cell_molecules?pos=${pos}&pad=80`); const n = m.hdr.n, p2 = new Float32Array(n*2); for(let k=0;k<n;k++){ p2[2*k]=m.x[k]; p2[2*k+1]=m.y[k]; }
+    FOCUS.tx = {n, pos:p2, gene:m.gene, act:m.act, old:m.old, nw:m.new}; }
+  showInfo(d, FOCUS.tx); render();
+}
+function showInfo(d, m){
+  const box = $("#info"); if(!d){ box.style.display = "none"; return; }
+  const col = d.type ? META.type_colors[META.types.indexOf(d.type)] : "#555";
+  let h = `<div style="display:flex;justify-content:space-between;align-items:center"><div><span class="sw" style="background:${col};margin-right:6px"></span><b>${d.type || "unlabelled"}</b></div><button class="btn" onclick="clearSel()">✕</button></div>`;
+  h += `<div class="small mut" style="margin:2px 0 6px">cell_id <b style="color:#fff;user-select:all">${d.cell_id}</b> · pos ${d.pos} · (${d.cx.toFixed(1)}, ${d.cy.toFixed(1)})</div>`;
+  if(!d.in_run){ h += `<div class="small">This cell was not part of the run (no cell-type label), so its molecules were not corrected.</div>`; box.innerHTML = h; box.style.display = "block"; return; }
+  h += `<div class="small">molecules: raw <b>${fmt(d.n_raw)}</b> → cleaned <b>${fmt(d.n_clean)}</b> &nbsp; moved in <b style="color:var(--move)">${d.n_in}</b> · moved out <b style="color:var(--move)">${d.n_out}</b> · dropped <b style="color:var(--drop)">${d.n_drop}</b></div>`;
+  if(m){ let mi=0, mo=0, kp=0, dr=0; for(let k=0;k<m.n;k++){ if(m.act[k]===0) kp++; else if(m.act[k]===2) dr++; else if(m.nw[k]===d.pos) mi++; else mo++; }
+    h += `<div class="small mut" style="margin:3px 0">highlighted on the map: ${kp} kept · ${mi} arriving · ${mo} leaving · ${dr} dropped &nbsp;<button class="btn" onclick="flyTo(${d.cx},${d.cy},5)">zoom to cell</button></div>`; }
+  const g = d.genes.slice(); g.sort((a,b)=>Math.abs(b[2]-b[1]) - Math.abs(a[2]-a[1]) || b[2]-a[2]);
+  h += `<table><tr><th>gene</th><th>raw</th><th>cleaned</th><th>Δ</th></tr>` + g.slice(0, 14).map(([n,r,c])=>`<tr><td>${n}</td><td>${r}</td><td>${c}</td><td style="color:${c-r>0?'#5ec27a':(c-r<0?'#e5484d':'#98a2b3')}">${c-r>0?'+':''}${c-r}</td></tr>`).join("") + `</table>`;
+  if(d.genes.length > 14) h += `<div class="small mut">${d.genes.length} genes detected; 14 with the largest change shown</div>`;
+  box.innerHTML = h; box.style.display = "block";
+}
+function clearSel(){ FOCUS = null; showInfo(null); render(); }
+window.clearSel = clearSel; window.flyTo = flyTo;
+
+// ---------- genes ----------
+function addGene(name){ const i = GIDX[name]; if(i === undefined){ toast(`gene "${name}" not in this panel`); return; } if(selGenes.includes(i)) return; if(selGenes.length >= 60){ toast("at most 60 genes at once"); return; }
+  selGenes.push(i); renderChips(); lastKey.tx = ""; fetchTx(); }
+function renderChips(){ $("#ngsel").textContent = selGenes.length; pushHash();
+  $("#chips").innerHTML = selGenes.map(i=>`<span class="chip" data-i="${i}"><span class="sw" style="background:rgb(${geneColor(i)});width:8px;height:8px;margin-right:4px"></span>${GENES[i]} ✕</span>`).join("");
+  $("#chips").querySelectorAll(".chip").forEach(el => el.onclick = () => { selGenes = selGenes.filter(x => x != +el.dataset.i); renderChips(); lastKey.tx = ""; fetchTx(); }); }
+$("#gene").addEventListener("keydown", e => { if(e.key === "Enter"){ addGene(e.target.value.trim()); e.target.value = ""; } });
+$("#gene").addEventListener("change", e => { if(GIDX[e.target.value.trim()] !== undefined){ addGene(e.target.value.trim()); e.target.value = ""; } });
+
+// ---------- cell fill by expression ----------
+async function loadExpr(name){
+  const gi = GIDX[name]; if(gi === undefined){ toast(`gene "${name}" not in this panel`); return; }
+  exprGene = gi; const raw = new Float32Array(NT), clean = new Float32Array(NT);
+  const [a, b] = await Promise.all([fetchBin(`/api/expr?gene=${gi}&layer=raw`), fetchBin(`/api/expr?gene=${gi}&layer=clean`)]);
+  for(let k=0;k<a.hdr.fields[0][2];k++) raw[a.cell[k]] = a.val[k]; for(let k=0;k<b.hdr.fields[0][2];k++) clean[b.cell[k]] = b.val[k];
+  const vals = Array.from(a.val).concat(Array.from(b.val)).sort((x,y)=>x-y); const vmax = vals.length ? vals[Math.floor(0.99*(vals.length-1))] : 1;
+  EXPR = {raw, clean, gene: gi, vmax: Math.max(vmax, 1)}; drawLegend(); render();
+}
+
+// ---------- legend ----------
+function drawLegend(){
+  let h = "";
+  if(cellMode === "type") h = META.types.map((t,i)=>`<div class="t ${typeOff.has(i)?'off':''}" data-t="${i}"><span class="sw" style="background:${META.type_colors[i]}"></span>${t} <span class="mut">${fmt(META.type_counts[i])}</span></div>`).join("");
+  else if(cellMode === "raw" || cellMode === "clean") h = `<div class="ramp" style="background:linear-gradient(90deg,${VIRIDIS.map(c=>`rgb(${c})`).join(",")})"></div><div class="small mut">0 … ${EXPR.gene!==null? EXPR.vmax : "?"} counts (log scale, 99th percentile)${EXPR.gene!==null? " · " + GENES[EXPR.gene] : ""}</div>`;
+  else if(cellMode === "delta") h = `<div class="ramp" style="background:linear-gradient(90deg,#2166ac,#fff,#b2182b)"></div><div class="small mut">lost … unchanged … gained (cleaned − raw)</div>`;
+  else if(cellMode === "dropfrac" || cellMode === "movefrac") h = `<div class="ramp" style="background:linear-gradient(90deg,${MAGMA.map(c=>`rgb(${c})`).join(",")})"></div><div class="small mut">0 … 40 % of the cell's molecules</div>`;
+  $("#legend").innerHTML = h;
+  $("#legend").querySelectorAll(".t").forEach(el => el.onclick = () => { const t = +el.dataset.t; typeOff.has(t) ? typeOff.delete(t) : typeOff.add(t); drawLegend(); render(); });
+}
+
+// ---------- controls ----------
+$("#txmode").onclick = e => { if(e.target.dataset.v){ txMode = e.target.dataset.v; seg("#txmode", txMode); render(); } };
+$("#fatefilter").onchange = () => { lastKey.tx = ""; fetchTx(); };
+$("#allgenes").onchange = () => { lastKey.tx = ""; fetchTx(); };
+$("#arrows").onchange = render; $("#psize").oninput = render; $("#outlines").onchange = render; $("#fillop").oninput = render;
+$("#cellmode").onchange = e => { cellMode = e.target.value; $("#exprrow").style.display = ["raw","clean","delta"].includes(cellMode) ? "flex" : "none";
+  if(["raw","clean","delta"].includes(cellMode) && exprGene === null && selGenes.length){ $("#exprgene").value = GENES[selGenes[0]]; loadExpr(GENES[selGenes[0]]); } else { drawLegend(); render(); } };
+$("#exprgene").addEventListener("change", e => loadExpr(e.target.value.trim()));
+$("#exprgene").addEventListener("keydown", e => { if(e.key === "Enter") loadExpr(e.target.value.trim()); });
+$("#find").addEventListener("keydown", async e => { if(e.key !== "Enter") return; const v = e.target.value.trim(); if(!v) return;
+  const m = v.match(/^\s*(-?[\d.]+)\s*[, ]\s*(-?[\d.]+)\s*$/);
+  if(m){ flyTo(+m[1], +m[2], 4); return; }
+  const r = await fetch(`/api/find?cell_id=${encodeURIComponent(v)}`); if(!r.ok){ toast(`cell "${v}" not found`); return; }
+  const d = await r.json(); flyTo(d.cx, d.cy, 5); setTimeout(()=>selectCell(d.pos), 750); });
+$("#fit").onclick = () => deckgl.setProps({initialViewState: {...fitView(), transitionDuration: 600}});
+$("#clear").onclick = clearSel;
+$("#shot").onclick = () => { deckgl.redraw(true); deckgl.deck.canvas.toBlob(b => { const a = document.createElement("a"); a.href = URL.createObjectURL(b); a.download = `celldot_${META.dataset}.png`; a.click(); }); };
+document.addEventListener("keydown", e => { if(e.target.tagName === "INPUT") return;
+  if(e.key === "f" || e.key === "F") $("#fit").click(); if(e.key === "Escape") clearSel(); if(e.key === "a" || e.key === "A"){ $("#arrows").checked = !$("#arrows").checked; render(); } });
+function seg(sel, v){ document.querySelectorAll(sel + " button").forEach(b => b.classList.toggle("on", b.dataset.v === v)); }
+window.onresize = () => scheduleAll();
+boot().catch(e => { $("#status").innerHTML = "failed to load: " + e + "<pre id=\"errstack\" style=\"white-space:pre-wrap;max-width:600px;text-align:left\">" + (e.stack||"") + "</pre>"; console.error(e); });
+</script>
