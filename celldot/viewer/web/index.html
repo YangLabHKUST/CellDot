@@ -145,7 +145,7 @@ async function boot(){
   });
   onView(iv); render();
   if(H.genes) H.genes.forEach(g=>selGenes.push(GIDX[g]));
-  else ["EPCAM","KRT8","PTPRC","CD3E","COL1A1","Gfap","Epcam"].forEach(g=>{ if(GIDX[g]!==undefined && selGenes.length<2) selGenes.push(GIDX[g]); });
+  else ["EPCAM","KRT8","PTPRC","CD3E","COL1A1"].forEach(g=>{ if(GIDX[g]!==undefined && selGenes.length<2) selGenes.push(GIDX[g]); });
   renderChips(); scheduleAll();
 }
 function fitView(){
