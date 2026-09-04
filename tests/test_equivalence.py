@@ -60,7 +60,8 @@ def check_format(out, fx):
     assert (R != A.layers["raw"]).nnz == 0, "layers['raw'] must equal the evaluated molecules by source"
     p1 = read_provenance(out + "/cleaned.h5ad"); p2 = read_provenance(out + "/transcripts.parquet")
     assert p1["run_id"] == p2["run_id"] and p1["version"] == celldot.__version__ and p2["n_tx_total"] == tout.num_rows
-    assert (p1["n_keep"], p1["n_move"], p1["n_drop"]) == (int(kp.sum()), int(mv.sum()), int((fate == "drop").sum()))
+    for p in (p1, p2):
+        assert (p["n_keep"], p["n_move"], p["n_drop"], p["n_background"], p["n_not_evaluated"]) == tuple(int((fate == k).sum()) for k in ["keep", "move", "drop", "background", "not_evaluated"]), "provenance fate counts"
     print(f"  format OK: {A.n_obs} cells | transcripts {tout.num_rows:,} rows: " + ", ".join(f"{k} {int((fate == k).sum()):,}" for k in ["keep", "move", "drop", "background", "not_evaluated"]) + f" | run_id {p1['run_id']}")
     return A
 

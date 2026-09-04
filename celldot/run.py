@@ -197,12 +197,12 @@ def run(cfg):
                drop_frac=round(ndrop / max(ncore, 1), 4), ambient_density=round(float(N_SOUP / max(A_extra, 1)), 5),
                n_cells=int(NCELL), n_genes=int(G), n_types=int(NT),
                n_keep=n_keep_m, n_move=n_move_m, n_drop=n_drop_m, params=params)
-    spd["run_id"] = hashlib.md5(json.dumps(spd, sort_keys=True, default=str).encode()).hexdigest()[:16]
+    # ---- transcripts.parquet: the input table row for row + celldot_cell_id, celldot_fate (streamed by row group).
+    #      Completes the provenance record (background / not_evaluated counts, then run_id) before anything is written,
+    #      so cleaned.h5ad and transcripts.parquet carry the same complete record. ----
+    write_transcripts(cfg, meta, cell_ids, _rw, _oh, _nh, spd, log)
     A.uns["celldot"] = spd
     A.write(cfg.cleaned)
-
-    # ---- transcripts.parquet: the input table row for row + celldot_cell_id, celldot_fate (streamed by row group) ----
-    write_transcripts(cfg, meta, cell_ids, _rw, _oh, _nh, spd, log)
     log(f"wrote {cfg.cleaned} + {cfg.transcripts}  run_id={spd['run_id']} v{PKG_VERSION}  (molecules {len(_nh):,}: "
         f"keep {n_keep_m:,} move {n_move_m:,} drop {n_drop_m:,})")
     log("DONE run")
@@ -215,23 +215,31 @@ FATES = ["keep", "move", "drop", "background", "not_evaluated"]
 def write_transcripts(cfg, meta, cell_ids, rows, old_pos, new_pos, prov, log):
     """Copy the input transcripts.parquet row group by row group, appending celldot_cell_id (same dtype and vocabulary
     as cell_id; the platform's unassigned value for background) and celldot_fate. rows/old_pos/new_pos describe the
-    processed molecules (row in the input file, host position, destination position or -1 = dropped)."""
-    pf = pq.ParquetFile(cfg.TX); N_ALL = int(meta.get("n_tx_total", 0)) or pf.metadata.num_rows
+    processed molecules (row in the input file, host position, destination position or -1 = dropped). Completes
+    ``prov`` (n_background, n_not_evaluated, run_id) before writing so both output files carry the same record."""
+    pf = pq.ParquetFile(cfg.TX); N_ALL = pf.metadata.num_rows
     fate = np.full(N_ALL, 4, np.int8); dest = np.full(N_ALL, -1, np.int32)               # 4 = not_evaluated
     fate[rows] = np.where(new_pos < 0, 2, np.where(new_pos == old_pos, 0, 1)).astype(np.int8); dest[rows] = new_pos.astype(np.int32)
-    SENT = set(map(str, cfg.unassigned)); sent_v = meta.get("unassigned_value", cfg.unassigned[0])
+    SENT = set(map(str, cfg.unassigned)); sent_ints = [int(x) for x in SENT if x.lstrip("-").isdigit()]
     _ca = pd.read_parquet(cfg.CELLS, columns=["cell_id"])["cell_id"]                     # original dtype of the ids
     orig = pd.Series(_ca.values, index=_ca.astype(str).values).reindex(cell_ids).values     # position -> original id value
-    md = None; writer = None; off = 0; fate_dict = pa.array(FATES)
+    is_int = _ca.dtype.kind in "iu"
+    def bg_rows(cid_np):                                                                   # the platform's "no cell" rows
+        return np.isin(cid_np, sent_ints) if cid_np.dtype.kind in "iu" else np.isin(cid_np.astype(str), list(SENT))
+    off = 0                                                                                # pass 1: cell_id column only -> background
     for rg in range(pf.num_row_groups):
-        t = pf.read_row_group(rg); n = t.num_rows; f = fate[off:off + n].copy(); d = dest[off:off + n]
+        c = pf.read_row_group(rg, columns=["cell_id"]).column("cell_id").to_numpy(zero_copy_only=False); n = len(c)
+        f = fate[off:off + n]; f[(f == 4) & bg_rows(c)] = 3; off += n
+    cnt = np.bincount(fate, minlength=5); prov.update(n_background=int(cnt[3]), n_not_evaluated=int(cnt[4]))
+    prov["run_id"] = hashlib.md5(json.dumps(prov, sort_keys=True, default=str).encode()).hexdigest()[:16]
+    sent_v = meta.get("unassigned_value", cfg.unassigned[0])
+    sv = (int(sent_v) if str(sent_v).lstrip("-").isdigit() else -1) if is_int else sent_v
+    writer = None; off = 0; fate_dict = pa.array(FATES); md = None
+    for rg in range(pf.num_row_groups):                                                   # pass 2: copy + append
+        t = pf.read_row_group(rg); n = t.num_rows; f = fate[off:off + n]; d = dest[off:off + n]
         cid = t.column("cell_id"); cid_np = cid.to_numpy(zero_copy_only=False)
-        if cid_np.dtype.kind in "iu": isbg = np.isin(cid_np, [int(x) for x in SENT if x.lstrip("-").isdigit()])
-        else: isbg = np.isin(cid_np.astype(str), list(SENT))
-        f[(f == 4) & isbg] = 3
         new = cid_np.copy(); m = f <= 1
         if m.any(): new[m] = orig[d[m]]
-        sv = sent_v if cid_np.dtype.kind not in "iu" else (int(sent_v) if str(sent_v).lstrip("-").isdigit() else -1)
         new[f == 2] = sv
         if cid_np.dtype.kind in "iu": new = new.astype(cid_np.dtype)
         t = t.append_column("celldot_cell_id", pa.array(new, type=cid.type))
@@ -241,8 +249,7 @@ def write_transcripts(cfg, meta, cell_ids, rows, old_pos, new_pos, prov, log):
             writer = pq.ParquetWriter(cfg.transcripts, t.schema.with_metadata(md), compression="zstd")
         writer.write_table(t.replace_schema_metadata(md)); off += n
     writer.close()
-    cnt = np.bincount(fate, minlength=5); prov.update(n_background=int(cnt[3]), n_not_evaluated=int(cnt[4]))
-    assert off == N_ALL, f"transcripts.parquet has {off} rows, prep counted {N_ALL}"
+    assert off == N_ALL, f"transcripts.parquet has {off} rows, expected {N_ALL}"
     log(f"transcripts.parquet: {off:,} rows | keep {cnt[0]:,} move {cnt[1]:,} drop {cnt[2]:,} background {cnt[3]:,} not_evaluated {cnt[4]:,}")
 
 
