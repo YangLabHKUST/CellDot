@@ -138,14 +138,19 @@ panel and on a whole-transcriptome section with a billion molecules.
 - **Molecules** of the genes you pick, or of *all* genes once you are zoomed in, coloured by fate or by
   gene, with arrows from each moved molecule to the cell it now belongs to. Hover for gene, fate, source
   and destination cell.
+- **Same-type moves.** The switch at the top right (key `S`, on by default) draws a molecule that moved
+  between two cells of the *same* cell type as kept, without an arrow, so the arrows show only the moves
+  that change a molecule's cell type. The status bar and each cell's tooltip report both counts.
 - **Click a cell** to see its id, type, molecule counts, every gene's raw and cleaned count, and all of
   its molecules highlighted: kept, arriving, leaving and dropped.
-- **Find** a cell by id or jump to coordinates; the URL keeps the view and the selected genes, so it can
-  be shared; save the current view as PNG; the status bar reports fate fractions inside the view.
+- **Find** a cell by id or jump to coordinates; the URL keeps the view, the selected genes, the switch
+  and the selected cell (`#cell=<cell_id>`), so a link to one cell can be shared; save the current view
+  as PNG; the status bar reports fate fractions inside the view.
 
 The first launch builds a query bundle next to the h5ad (`viewer_bundle/`, a few hundred MB per hundred
-million molecules; about a minute per hundred million molecules). Use `--rebuild` after re-running CellDot,
-`--port` to change the port, `--no-browser` on a server (then tunnel the port with ssh).
+million molecules; about a minute per hundred million molecules); a bundle built by an older CellDot is
+rebuilt automatically. Use `--rebuild` after re-running CellDot, `--port` to change the port,
+`--no-browser` on a server (then tunnel the port with ssh).
 
 ## Relation to the research package (`spdenoise`)
 

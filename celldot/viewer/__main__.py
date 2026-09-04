@@ -3,7 +3,7 @@
     celldot-view --run <out_dir> --boundaries <cell_boundaries.parquet>           # out_dir has cleaned.h5ad + transcripts.parquet
     celldot-view --h5ad cleaned.h5ad --transcripts transcripts.parquet --boundaries cell_boundaries.parquet
 """
-import argparse, os, sys, threading, webbrowser
+import argparse, json, os, sys, threading, webbrowser
 
 
 def main():
@@ -24,11 +24,14 @@ def main():
     tx = a.transcripts or (os.path.join(a.run, "transcripts.parquet") if a.run else None)
     if not h5: sys.exit("need --run <dir> or --h5ad/--transcripts")
     bundle = a.bundle or os.path.join(os.path.dirname(os.path.abspath(h5)), "viewer_bundle")
-    if a.rebuild or not os.path.exists(os.path.join(bundle, "meta.json")):
+    from .prep import build_bundle, BUNDLE_VERSION
+    mp = os.path.join(bundle, "meta.json")
+    stale = os.path.exists(mp) and json.load(open(mp)).get("bundle_version", 1) != BUNDLE_VERSION
+    if a.rebuild or stale or not os.path.exists(mp):
+        if stale: print(f"viewer bundle {bundle} was built by an older CellDot version; rebuilding it", flush=True)
         b = a.boundaries or (os.path.join(a.outs, "cell_boundaries.parquet") if a.outs else None)
         for f, what in ((h5, "cleaned.h5ad"), (tx, "transcripts.parquet"), (b, "cell_boundaries.parquet")):
             if not f or not os.path.exists(f): sys.exit(f"need {what} to build the bundle (got {f!r}); see --run/--h5ad/--transcripts/--boundaries")
-        from .prep import build_bundle
         build_bundle(h5, tx, b, bundle, tile=a.tile, threads=a.threads, memory_limit=a.memory_limit)
     if a.prep_only: return
     from .server import create_app

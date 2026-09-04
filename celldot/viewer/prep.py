@@ -8,14 +8,18 @@ Writes <bundle>/
     meta.json                 counts, extent, types + colours, fate totals, provenance
     genes.json                gene names (index == the integer gene code used below)
     cells.parquet             one row per cell (run cells first, in obs order = pos; then boundary-only cells):
-                              pos, cell_id, type, cx, cy, n_in, n_out, n_drop, n_raw, n_clean, in_run, bbox, polygon
-                              (vx/vy lists) — TILE-SORTED so a viewport query touches few row groups
-    molecules_sorted.parquet  x, y, gene(code), act(0 keep/1 move/2 drop), old(pos), new(pos; -1 dropped) — TILE-SORTED
+                              pos, cell_id, type, cx, cy, n_in, n_out, n_drop, n_raw, n_clean, n_in_same, n_out_same
+                              (moves whose old and new cell share a cell type), in_run, bbox, polygon (vx/vy lists)
+                              — TILE-SORTED so a viewport query touches few row groups
+    molecules_sorted.parquet  x, y, gene(code), act(0 keep/1 move/2 drop), old(pos), new(pos; -1 dropped),
+                              same(1 = a move between two cells of the same type) — TILE-SORTED
     expr_by_gene.parquet      gene, cell, raw, clean   sorted by gene  (per-gene cell fills)
     expr_by_cell.parquet      cell, gene, raw, clean   sorted by cell  (per-cell gene tables)
 """
 import os, json, time, tempfile, numpy as np, h5py, scipy.sparse as sp
 import pyarrow as pa, pyarrow.parquet as pq
+
+BUNDLE_VERSION = 2        # bump when the bundle layout changes; celldot-view rebuilds older bundles automatically
 
 PALETTE = ["#e6194b", "#3cb44b", "#d4a017", "#4363d8", "#f58231", "#911eb4", "#2bb5c4", "#f032e6", "#7cae00",
            "#d68aa8", "#469990", "#8d6fc7", "#9a6324", "#b0a030", "#800000", "#3a9d6e", "#000075", "#e07b39",
@@ -119,19 +123,6 @@ def build_bundle(h5ad, transcripts, boundaries, out_dir, tile=100.0, threads=4, 
     order = np.argsort(key, kind="stable")
     cnt = nv[order]; offs = np.r_[0, np.cumsum(cnt)].astype(np.int32)
     idx = np.concatenate([np.arange(st[p], st[p] + nv[p]) for p in order[has[order]]]) if has.any() else np.zeros(0, np.int64)
-    cells = pa.table({
-        "pos": pa.array(order.astype(np.int32)), "cell_id": pa.array(pos_ids[order].tolist(), pa.string()),
-        "type": pa.array(ptype[order]), "cx": pa.array(cxa[order].astype(np.float32)), "cy": pa.array(cya[order].astype(np.float32)),
-        "n_in": pa.array(n_in[order]), "n_out": pa.array(n_out[order]), "n_drop": pa.array(n_drop[order]),
-        "n_raw": pa.array(n_raw[order]), "n_clean": pa.array(n_clean[order]), "in_run": pa.array((order < N)),
-        "nv": pa.array(cnt.astype(np.int32)),
-        "xmin": pa.array(xmin[order].astype(np.float32)), "xmax": pa.array(xmax[order].astype(np.float32)),
-        "ymin": pa.array(ymin[order].astype(np.float32)), "ymax": pa.array(ymax[order].astype(np.float32)),
-        "vx": pa.ListArray.from_arrays(pa.array(offs, pa.int32()), pa.array(vx[idx])),
-        "vy": pa.ListArray.from_arrays(pa.array(offs, pa.int32()), pa.array(vy[idx])),
-    })
-    pq.write_table(cells, os.path.join(out_dir, "cells.parquet"), row_group_size=20000, compression="zstd")
-    L(f"cells.parquet: {NT:,} cells ({N:,} in run, {E:,} boundary-only, {int(has[:N].sum()):,} run cells with polygons)")
 
     # ---------------- expression (raw & clean, union of nonzeros) --------------------------------
     con = duckdb.connect(); con.execute(f"PRAGMA threads={threads}"); con.execute(f"SET memory_limit='{memory_limit}'")
@@ -147,14 +138,16 @@ def build_bundle(h5ad, transcripts, boundaries, out_dir, tile=100.0, threads=4, 
     L(f"expression tables: {nnz:,} (cell, gene) entries")
 
     # ---------------- molecules: cell_id -> pos, gene name -> code, tile-sorted --------------------
-    con.register("cells_map", pa.table({"cell_id": pa.array(R["cell_id"].tolist(), pa.string()), "pos": np.arange(N, dtype=np.int32)}))
+    con.register("cells_map", pa.table({"cell_id": pa.array(R["cell_id"].tolist(), pa.string()), "pos": np.arange(N, dtype=np.int32),
+                                        "type": ptype[:N].astype(np.int16)}))
     con.register("gene_map", pa.table({"name": pa.array(R["genes"], pa.string()), "code": np.arange(G, dtype=np.int32)}))
     msort = os.path.join(out_dir, "molecules_sorted.parquet")
     con.execute(f"""
 COPY (
   SELECT CAST(m.x_location AS REAL) AS x, CAST(m.y_location AS REAL) AS y, g.code AS gene,
          CAST(CASE m.celldot_fate WHEN 'keep' THEN 0 WHEN 'move' THEN 1 ELSE 2 END AS TINYINT) AS act,
-         o.pos AS old, COALESCE(n.pos, -1) AS new
+         o.pos AS old, COALESCE(n.pos, -1) AS new,
+         CAST(CASE WHEN m.celldot_fate = 'move' AND o.type = n.type THEN 1 ELSE 0 END AS TINYINT) AS same
   FROM read_parquet('{mol}') m
   JOIN gene_map g ON CAST(m.feature_name AS VARCHAR) = g.name
   JOIN cells_map o ON CAST(m.cell_id AS VARCHAR) = o.cell_id
@@ -165,16 +158,42 @@ COPY (
     n_in_mol = con.execute(f"SELECT count(*) FROM read_parquet('{mol}') WHERE celldot_fate IN ('keep', 'move', 'drop')").fetchone()[0]
     ntx, x0, x1, y0, y1 = con.execute(f"SELECT count(*), min(x), max(x), min(y), max(y) FROM read_parquet('{msort}')").fetchone()
     assert ntx == n_in_mol, f"{n_in_mol - ntx} evaluated molecules reference a gene or cell absent from cleaned.h5ad"
-    fate = dict(con.execute(f"SELECT act, count(*) FROM read_parquet('{msort}') GROUP BY act").fetchall()); con.close()
-    L(f"molecules_sorted.parquet: {ntx:,} molecules | fate keep {fate.get(0,0):,} move {fate.get(1,0):,} drop {fate.get(2,0):,}")
+    fate = {}; move_same = 0
+    for a, s, n in con.execute(f"SELECT act, same, count(*) FROM read_parquet('{msort}') GROUP BY act, same").fetchall():
+        fate[int(a)] = fate.get(int(a), 0) + int(n)
+        if int(a) == 1 and int(s) == 1: move_same = int(n)
+    L(f"molecules_sorted.parquet: {ntx:,} molecules | fate keep {fate.get(0,0):,} move {fate.get(1,0):,} "
+      f"(of which {move_same:,} between cells of the same type) drop {fate.get(2,0):,}")
+    # per-cell counts of same-type moves (out of the old cell, into the new cell)
+    n_in_same = np.zeros(NT, np.int32); n_out_same = np.zeros(NT, np.int32)
+    for col, arr in (("old", n_out_same), ("new", n_in_same)):
+        d = con.execute(f"SELECT {col} AS c, count(*) AS n FROM read_parquet('{msort}') WHERE same = 1 GROUP BY {col}").fetchnumpy()
+        if len(d["c"]): arr[np.asarray(d["c"], np.int64)] = np.asarray(d["n"], np.int32)
+    con.close()
+
+    # ---------------- cells table (tile-sorted) ----------------
+    cells = pa.table({
+        "pos": pa.array(order.astype(np.int32)), "cell_id": pa.array(pos_ids[order].tolist(), pa.string()),
+        "type": pa.array(ptype[order]), "cx": pa.array(cxa[order].astype(np.float32)), "cy": pa.array(cya[order].astype(np.float32)),
+        "n_in": pa.array(n_in[order]), "n_out": pa.array(n_out[order]), "n_drop": pa.array(n_drop[order]),
+        "n_raw": pa.array(n_raw[order]), "n_clean": pa.array(n_clean[order]),
+        "n_in_same": pa.array(n_in_same[order]), "n_out_same": pa.array(n_out_same[order]), "in_run": pa.array((order < N)),
+        "nv": pa.array(cnt.astype(np.int32)),
+        "xmin": pa.array(xmin[order].astype(np.float32)), "xmax": pa.array(xmax[order].astype(np.float32)),
+        "ymin": pa.array(ymin[order].astype(np.float32)), "ymax": pa.array(ymax[order].astype(np.float32)),
+        "vx": pa.ListArray.from_arrays(pa.array(offs, pa.int32()), pa.array(vx[idx])),
+        "vy": pa.ListArray.from_arrays(pa.array(offs, pa.int32()), pa.array(vy[idx])),
+    })
+    pq.write_table(cells, os.path.join(out_dir, "cells.parquet"), row_group_size=20000, compression="zstd")
+    L(f"cells.parquet: {NT:,} cells ({N:,} in run, {E:,} boundary-only, {int(has[:N].sum()):,} run cells with polygons)")
 
     ex = dict(xmin=float(min(x0, np.nanmin(xmin))), xmax=float(max(x1, np.nanmax(xmax))), ymin=float(min(y0, np.nanmin(ymin))), ymax=float(max(y1, np.nanmax(ymax))))
     meta = {"dataset": R["prov"].get("dataset", os.path.basename(os.path.dirname(os.path.abspath(h5ad)))), "provenance": R["prov"],
             "n_cells": int(N), "n_cells_total": int(NT), "n_cells_polygon": int(has.sum()), "n_tx": int(ntx), "n_genes": G,
             "extent": ex, "types": types, "type_colors": [PALETTE[i % len(PALETTE)] for i in range(len(types))],
             "type_counts": [int((R["typ"] == t).sum()) for t in types],
-            "fate": {"keep": int(fate.get(0, 0)), "move": int(fate.get(1, 0)), "drop": int(fate.get(2, 0))},
-            "tile": float(tile), "built": time.strftime("%Y-%m-%d %H:%M:%S"), "h5ad": os.path.abspath(h5ad), "transcripts": os.path.abspath(transcripts), "boundaries": os.path.abspath(boundaries)}
+            "fate": {"keep": int(fate.get(0, 0)), "move": int(fate.get(1, 0)), "drop": int(fate.get(2, 0)), "move_same": int(move_same)},
+            "bundle_version": BUNDLE_VERSION, "tile": float(tile), "built": time.strftime("%Y-%m-%d %H:%M:%S"), "h5ad": os.path.abspath(h5ad), "transcripts": os.path.abspath(transcripts), "boundaries": os.path.abspath(boundaries)}
     json.dump(meta, open(os.path.join(out_dir, "meta.json"), "w"), indent=1)
     L(f"DONE -> {out_dir}")
     return meta
