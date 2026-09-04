@@ -143,15 +143,18 @@ panel and on a whole-transcriptome section with a billion molecules.
   that change a molecule's cell type. The status bar and each cell's tooltip report both counts.
 - **Click a cell** to see its id, type, molecule counts, every gene's raw and cleaned count, and all of
   its molecules highlighted: kept, arriving, leaving and dropped.
-- **Find** a cell by id or jump to coordinates; the URL keeps the view, the selected genes, the switch
-  and the selected cell (`#cell=<cell_id>`), so a link to one cell can be shared; save the current view
-  as PNG; the status bar reports fate fractions inside the view.
+- **Links.** The URL keeps the view, the selected genes, the switch and the selected cell
+  (`#cell=<cell_id>`), so a link to one cell or one scene can be shared.
+- **Keys.** `F` fit to tissue, `Esc` clear the selection, `A` arrows on/off, `S` same-type moves,
+  `P` save the map as PNG, `shift+D` set the current scene as the default view, `shift+B` add a bookmark
+  (the last two write the view file described next; hover the counts under the title for the list).
 
 **Opening view (optional).** The viewer opens fitted to the tissue with a couple of marker genes preselected.
 To open on a chosen scene instead, put a `celldot_view.json` next to `cleaned.h5ad` (or pass `--view`); without
-the file nothing changes, so ordinary runs need none. The easiest way to write it is the *set as default view*
-button in the View section, which stores the current position, zoom, genes, selected cell and settings; *add
-bookmark* stores named scenes that appear as buttons. By hand:
+the file nothing changes, so ordinary runs need none. The easiest way to write it is `shift+D` in the viewer,
+which stores the current position, width, genes, selected cell and settings as the default view; `shift+B`
+stores the scene as a named bookmark, and bookmarks appear as buttons at the bottom of the panel (shift-click
+one to remove it). By hand:
 
 ```json
 {"default": {"x": 4218.7, "y": 2936.8, "width_um": 50, "genes": ["CLCA1"], "cell": null},

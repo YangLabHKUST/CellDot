@@ -35,8 +35,6 @@
   #info td, #info th { padding:1px 3px; text-align:right; } #info td:first-child, #info th:first-child { text-align:left; }
   #info th { color:var(--mut); font-weight:normal; border-bottom:1px solid var(--line); }
   #topright { position:absolute; top:12px; right:12px; display:flex; flex-direction:column; align-items:flex-end; gap:7px; }
-  #status { background:rgba(20,24,33,.92); border:1px solid var(--line); border-radius:9px; padding:6px 10px;
-            font-size:11.5px; color:var(--mut); text-align:right; line-height:1.5; font-variant-numeric:tabular-nums; }
   .switch { display:flex; align-items:center; gap:8px; background:rgba(20,24,33,.92); border:1px solid var(--line); border-radius:9px;
             padding:6px 10px; font-size:12px; cursor:pointer; user-select:none; white-space:nowrap; }
   .switch:hover { border-color:var(--acc); }
@@ -44,7 +42,6 @@
   .tog::after { content:""; position:absolute; top:2px; left:2px; width:12px; height:12px; border-radius:50%; background:#fff; transition:left .15s; }
   .tog:checked { background:var(--acc); } .tog:checked::after { left:16px; }
   .tog:focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
-  #status b { color:var(--fg); font-weight:600; }
   #scale { position:absolute; bottom:14px; right:14px; color:var(--fg); font-size:11px; text-align:center; }
   #scale .bar { height:4px; background:#fff; border:1px solid #000; margin-bottom:3px; }
   #legend { font-size:11.5px; }
@@ -58,12 +55,6 @@
 <div id="panel">
   <h1 id="ttl">CellDot viewer</h1>
   <div class="sub" id="counts">loading…</div>
-
-  <div class="sec">
-    <h2>Find</h2>
-    <input id="find" type="text" placeholder="cell id, or x,y coordinates — Enter" autocomplete="off">
-    <div class="row small mut" style="margin-top:5px">Click a cell to see the fate of each of its molecules.</div>
-  </div>
 
   <div class="sec">
     <h2>Molecules <span><span id="ngsel">0</span> genes</span></h2>
@@ -81,6 +72,7 @@
     <div class="row small mut" id="movenote" style="margin-top:0">moves within one cell type are drawn as kept (switch: top right)</div>
     <div class="row"><label><input type="checkbox" id="arrows" checked> arrows: moved molecule → new cell</label></div>
     <div class="row"><span class="mut small" style="width:52px">size</span><input type="range" id="psize" min="0.6" max="7" step="0.2" value="2.2"></div>
+    <div class="row small" id="txnote" style="display:none;color:#e8a33d"></div>
   </div>
 
   <div class="sec">
@@ -101,12 +93,9 @@
     <div id="legend"></div>
   </div>
 
-  <div class="sec">
-    <h2>View</h2>
-    <div class="row" id="viewfile" style="display:none"><span class="mut small" style="width:52px">views</span><div class="chips" id="bookmarks" style="margin-top:0;flex:1"></div></div>
-    <div class="row"><button class="btn" id="fit">fit to tissue</button><button class="btn" id="shot">save PNG</button><button class="btn" id="clear">clear selection</button></div>
-    <div class="row" id="viewsave" style="display:none"><button class="btn" id="setdefault" title="the viewer opens on the current view, genes and settings next time (writes celldot_view.json next to cleaned.h5ad)">set as default view</button><button class="btn" id="addbm">add bookmark</button></div>
-    <div class="row small mut"><span class="hint"><span class="kbd">F</span> fit</span> <span class="hint"><span class="kbd">Esc</span> clear</span> <span class="hint"><span class="kbd">A</span> arrows</span> <span class="hint"><span class="kbd">S</span> same-type moves</span> <span class="hint">scroll / drag to zoom and pan</span></div>
+  <div class="sec" id="viewfile" style="display:none">
+    <h2>Views</h2>
+    <div class="chips" id="bookmarks" style="margin-top:0"></div>
   </div>
 </div>
 <div id="info"></div>
@@ -114,7 +103,6 @@
 <div id="topright">
   <label class="switch" title="While on, a molecule that moved between two cells of the same cell type is drawn as kept (grey, no arrow), so the arrows show only moves that change cell type. Key: S">
     <input type="checkbox" class="tog" id="hidesame" checked> hide moves between the same cell type</label>
-  <div id="status">loading…</div>
 </div>
 <div id="scale"><div class="bar" id="scalebar"></div><span id="scaletxt"></span></div>
 <div id="toast"></div>
@@ -123,7 +111,7 @@
 const {DeckGL, OrthographicView, PolygonLayer, SolidPolygonLayer, PathLayer, ScatterplotLayer, LineLayer} = deck;
 const $ = s => document.querySelector(s);
 const FATE_COL = [[138,143,152],[47,143,224],[229,72,77]], FATE_NAME = ["keep","move","drop"];
-const POLY_MAX_W = 3500, ALL_GENES_W = 800, SUMMARY_W = 2500;     // viewport widths (µm) that switch level of detail
+const POLY_MAX_W = 3500, ALL_GENES_W = 800;                       // viewport widths (µm) that switch level of detail
 let META, GENES, GIDX = {}, C = null, NT = 0, NRUN = 0, TYPECOL = [], typeOff = new Set();
 let selGenes = [], txMode = "fate", cellMode = "type", exprGene = null, EXPR = {raw:null, clean:null, gene:null, vmax:1};
 let hideSame = true;                                                 // same-type moves drawn as kept (toggle, top right)
@@ -157,6 +145,7 @@ async function boot(){
     (META.provenance && META.provenance.run_id ? `<br>run ${META.provenance.run_id} · v${META.provenance.version}` : "");
   $("#genelist").innerHTML = GENES.slice(0, 20000).map(g=>`<option value="${g}">`).join("");
   $("#allw").textContent = ALL_GENES_W;
+  $("#counts").title = "keys: F fit to tissue · Esc clear selection · A arrows · S same-type moves · P save PNG · shift+D set as default view · shift+B add bookmark";
   C = await fetchBin("/api/cells"); NT = C.hdr.n; NRUN = C.hdr.n_run;
   C.pos2 = new Float32Array(NT*2); for(let i=0;i<NT;i++){ C.pos2[2*i]=C.cx[i]; C.pos2[2*i+1]=C.cy[i]; }
   drawLegend();
@@ -231,16 +220,15 @@ function renderBookmarks(){
   box.querySelectorAll(".chip").forEach(el => el.onclick = async e => { const b = bl[+el.dataset.i];
     if(e.shiftKey && VIEWCFG._writable){ if(confirm(`remove bookmark "${b.name}"?`)) await saveView({remove_bookmark: b.name}); return; }
     applyView(normView(b.view), true); });
-  $("#viewfile").style.display = bl.length ? "" : "none"; $("#viewsave").style.display = VIEWCFG._writable ? "" : "none";
+  $("#viewfile").style.display = bl.length ? "" : "none";
 }
 async function saveView(body){
   const r = await fetch("/api/view", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)});
   if(!r.ok){ toast("could not save the view: " + (await r.text()), 6000); return; }
-  const d = await r.json(); toast(`saved to ${d.file}`, 4000);
+  const d = await r.json(); toast(("default" in body ? "default view saved to " : "bookmark" in body ? "bookmark saved to " : "updated ") + d.file, 4000);
   try { VIEWCFG = await (await fetch("/api/view")).json(); } catch(e){} renderBookmarks();
 }
-$("#setdefault").onclick = () => saveView({default: currentView()});
-$("#addbm").onclick = () => { const name = prompt("bookmark name"); if(name && name.trim()) saveView({bookmark: {name: name.trim(), view: currentView()}}); };
+
 function fitView(){
   const e = META.extent, w = e.xmax - e.xmin, h = e.ymax - e.ymin;
   return {target: [(e.xmin+e.xmax)/2, (e.ymin+e.ymax)/2, 0], zoom: Math.log2(Math.min(innerWidth/w, innerHeight/h)) - 0.15};
@@ -271,7 +259,7 @@ function scaleBar(zoom){
   const L = nice.reduce((p,c)=>Math.abs(c-target)<Math.abs(p-target)?c:p);
   $("#scalebar").style.width = (L*pxPerUm) + "px"; $("#scaletxt").textContent = L >= 1000 ? (L/1000)+" mm" : L+" µm";
 }
-function scheduleAll(){ clearTimeout(timers.all); timers.all = setTimeout(()=>{ fetchPolys(); fetchTx(); fetchSummary(); }, 140); }
+function scheduleAll(){ clearTimeout(timers.all); timers.all = setTimeout(()=>{ fetchPolys(); fetchTx(); }, 140); }
 
 // ---------- cells: polygons in view (LOD) ----------
 async function fetchPolys(){
@@ -310,26 +298,11 @@ async function fetchTx(){
   TX = {n, pos, gene: d.gene, act: d.act, same: d.same, old: d.old, nw: d.new, sampled: d.hdr.sampled, total: d.hdr.total, all: qq.all};
   render(); status();
 }
-async function fetchSummary(){
-  const bb = bbox(0); if(!bb) return;
-  if(viewW > SUMMARY_W){ SUMMARY = null; status(); return; }
-  const url = `/api/summary?xmin=${bb.xmin.toFixed(1)}&xmax=${bb.xmax.toFixed(1)}&ymin=${bb.ymin.toFixed(1)}&ymax=${bb.ymax.toFixed(1)}`;
-  if(url === lastKey.sum) return; lastKey.sum = url;
-  clearTimeout(timers.sum); timers.sum = setTimeout(async ()=>{ try { SUMMARY = await (await fetch(url)).json(); status(); } catch(e){} }, 350);
-}
-let SUMMARY = null;
-function status(){
-  const f = SUMMARY || META.fate, tot = f.keep + f.move + f.drop;
-  const scope = SUMMARY ? "in view" : "whole section";
-  const pct = k => tot ? (100*f[k]/tot).toFixed(1) + "%" : "–";
-  let s = `<b>${fmt(tot)}</b> molecules ${scope}: keep <b>${pct("keep")}</b> · move <b>${pct("move")}</b> · drop <b>${pct("drop")}</b><br>`;
-  const ms = f.move_same || 0, msp = tot ? (100*ms/tot).toFixed(1) + "%" : "–";
-  s += hideSame ? `moves within one cell type (<b>${msp}</b>) drawn as kept<br>` : `moves within one cell type: <b>${msp}</b><br>`;
-  s += POLYS ? `${fmt(POLYS.n)} cell polygons${POLYS.sampled ? " (sampled)" : ""}` : `cells as points (zoom in below ${fmt(POLY_MAX_W)} µm for polygons)`;
-  if(TX) s += `<br>${fmt(TX.n)}${TX.sampled ? " of " + fmt(TX.total) : ""} molecules drawn${TX.all ? " (all genes)" : ""}${TX.sampled ? " · sampled" : ""}`;
-  else if(!selGenes.length) s += `<br><span style="color:#e8a33d">${$("#allgenes").checked ? `add a gene, or zoom in below ${ALL_GENES_W} µm, to see molecules` : "add a gene (or tick 'all genes when zoomed in') to see molecules"}</span>`;
-  s += `<br>view width ${viewW >= 1000 ? (viewW/1000).toFixed(2)+" mm" : viewW.toFixed(0)+" µm"}`;
-  $("#status").innerHTML = s;
+async function status(){                                   // one quiet line under the molecule controls, only when it helps
+  let s = "";
+  if(TX && TX.sampled) s = `${fmt(TX.n)} of ${fmt(TX.total)} molecules in view drawn (sampled; zoom in for all)`;
+  else if(!TX && !selGenes.length) s = $("#allgenes").checked ? `add a gene, or zoom in below ${ALL_GENES_W} µm, to see molecules` : "add a gene (or tick 'all genes when zoomed in') to see molecules";
+  const el = $("#txnote"); el.textContent = s; el.style.display = s ? "" : "none";
 }
 
 // ---------- colours ----------
@@ -488,18 +461,16 @@ $("#cellmode").onchange = e => { cellMode = e.target.value; $("#exprrow").style.
   if(["raw","clean","delta"].includes(cellMode) && exprGene === null && selGenes.length){ $("#exprgene").value = GENES[selGenes[0]]; loadExpr(GENES[selGenes[0]]); } else { drawLegend(); render(); } };
 $("#exprgene").addEventListener("change", e => loadExpr(e.target.value.trim()));
 $("#exprgene").addEventListener("keydown", e => { if(e.key === "Enter") loadExpr(e.target.value.trim()); });
-$("#find").addEventListener("keydown", async e => { if(e.key !== "Enter") return; const v = e.target.value.trim(); if(!v) return;
-  const m = v.match(/^\s*(-?[\d.]+)\s*[, ]\s*(-?[\d.]+)\s*$/);
-  if(m){ flyTo(+m[1], +m[2], 4); return; }
-  const r = await fetch(`/api/find?cell_id=${encodeURIComponent(v)}`); if(!r.ok){ toast(`cell "${v}" not found`); return; }
-  const d = await r.json(); flyTo(d.cx, d.cy, 5); setTimeout(()=>selectCell(d.pos), 750); });
-$("#fit").onclick = () => deckgl.setProps({initialViewState: {...fitView(), transitionDuration: 600}});
-$("#clear").onclick = clearSel;
-$("#shot").onclick = () => { deckgl.redraw(true); deckgl.deck.canvas.toBlob(b => { const a = document.createElement("a"); a.href = URL.createObjectURL(b); a.download = `celldot_${META.dataset}.png`; a.click(); }); };
-document.addEventListener("keydown", e => { if(e.target.tagName === "INPUT") return;
-  if(e.key === "f" || e.key === "F") $("#fit").click(); if(e.key === "Escape") clearSel(); if(e.key === "a" || e.key === "A"){ $("#arrows").checked = !$("#arrows").checked; render(); }
-  if(e.key === "s" || e.key === "S"){ $("#hidesame").checked = !$("#hidesame").checked; applySame(); } });
+function fitTissue(){ deckgl.setProps({initialViewState: {...fitView(), transitionDuration: 600}}); }
+function savePNG(){ deckgl.redraw(true); deckgl.deck.canvas.toBlob(b => { const a = document.createElement("a"); a.href = URL.createObjectURL(b); a.download = `celldot_${META.dataset}.png`; a.click(); }); }
+// keys: F fit · Esc clear selection · A arrows · S same-type moves · P save PNG · shift+D set as default view · shift+B add bookmark
+document.addEventListener("keydown", e => { if(e.target.tagName === "INPUT" || e.metaKey || e.ctrlKey || e.altKey) return; const k = e.key.toLowerCase();
+  if(k === "f") fitTissue(); else if(e.key === "Escape") clearSel(); else if(k === "p") savePNG();
+  else if(k === "a"){ $("#arrows").checked = !$("#arrows").checked; render(); }
+  else if(k === "s"){ $("#hidesame").checked = !$("#hidesame").checked; applySame(); }
+  else if(k === "d" && e.shiftKey && VIEWCFG._writable) saveView({default: currentView()});
+  else if(k === "b" && e.shiftKey && VIEWCFG._writable){ const name = prompt("bookmark name"); if(name && name.trim()) saveView({bookmark: {name: name.trim(), view: currentView()}}); } });
 function seg(sel, v){ document.querySelectorAll(sel + " button").forEach(b => b.classList.toggle("on", b.dataset.v === v)); }
 window.onresize = () => scheduleAll();
-boot().catch(e => { $("#status").innerHTML = "failed to load: " + e + "<pre id=\"errstack\" style=\"white-space:pre-wrap;max-width:600px;text-align:left\">" + (e.stack||"") + "</pre>"; console.error(e); });
+boot().catch(e => { $("#counts").innerHTML = "failed to load: " + e + "<pre id=\"errstack\" style=\"white-space:pre-wrap;max-width:600px;text-align:left\">" + (e.stack||"") + "</pre>"; console.error(e); });
 </script>
