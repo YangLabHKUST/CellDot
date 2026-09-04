@@ -4,8 +4,9 @@ Holds the input paths (raw Xenium ``outs/`` + reference h5ad + precomputed cell-
 output directory, and the operating point. All derived artefact paths live under ``out`` so a run is
 fully self-contained. Annotation is upstream: ``labels`` is a parquet of (cell_id, celltype[, prob]).
 
-Cell identity: every artefact CellDot writes names a cell by its ORIGINAL ``cell_id`` (the string in the
-platform's ``cells.parquet`` / ``transcripts.parquet``). There is no separate integer row id.
+Identity: every artefact CellDot writes names a cell by its ORIGINAL ``cell_id`` and a molecule by its position
+in the platform's ``transcripts.parquet`` (the output ``transcripts.parquet`` is that table, row for row, with the
+CellDot decision appended). There is no separate integer row id.
 """
 import os
 from dataclasses import dataclass
@@ -63,7 +64,7 @@ class CellDotConfig:
     cells_index_path: str = None
     assign_path: str = None
     cleaned_path: str = None
-    molecules_path: str = None
+    transcripts_path: str = None
 
     # ---- input paths ----
     @property
@@ -89,4 +90,4 @@ class CellDotConfig:
     @property
     def cleaned(self): return self.cleaned_path or os.path.join(self.out, "cleaned.h5ad")           # layers raw/greedy/celldot
     @property
-    def molecules(self): return self.molecules_path or os.path.join(self.out, "molecules.parquet")  # per-molecule fate
+    def transcripts(self): return self.transcripts_path or os.path.join(self.out, "transcripts.parquet")  # the input transcripts + celldot_cell_id, celldot_fate

@@ -1,8 +1,8 @@
-"""Build the viewer bundle from a CellDot run + the platform's cell boundaries.
+"""Build the viewer bundle from the three CellDot viewer inputs.
 
 Reads (no anndata needed: h5py + pyarrow + duckdb)
-    <run>/cleaned.h5ad        layers raw / celldot, obs (cell_id index, type, centroid, per-cell fate counts), var
-    <run>/molecules.parquet   per-molecule fate: x, y, gene, old_host, new_host, action   (cell_id strings)
+    cleaned.h5ad              layers raw / celldot, obs (cell_id index, type, centroid, per-cell fate counts), var
+    transcripts.parquet       the CellDot output transcripts table: the platform columns + celldot_cell_id, celldot_fate
     cell_boundaries.parquet   cell_id, vertex_x, vertex_y  (any platform export with these columns)
 Writes <bundle>/
     meta.json                 counts, extent, types + colours, fate totals, provenance
@@ -77,12 +77,12 @@ def read_boundaries(path):
     return cid[brk], brk, end, vx, vy
 
 
-def build_bundle(run_dir, boundaries, out_dir, tile=100.0, threads=4, memory_limit="8GB", log=None):
+def build_bundle(h5ad, transcripts, boundaries, out_dir, tile=100.0, threads=4, memory_limit="8GB", log=None):
     import duckdb
     log = log or (lambda *a: print(*a, flush=True))
     t0 = time.time(); L = lambda *a: log(f"[viewer-prep {time.time()-t0:6.1f}s]", *a)
     os.makedirs(out_dir, exist_ok=True)
-    h5 = os.path.join(run_dir, "cleaned.h5ad"); mol = os.path.join(run_dir, "molecules.parquet")
+    h5 = h5ad; mol = transcripts
     R = read_run(h5); N = len(R["cell_id"]); G = len(R["genes"])
     L(f"run: {N:,} cells x {G} genes | provenance {R['prov']}")
     json.dump({"names": R["genes"], "n": G}, open(os.path.join(out_dir, "genes.json"), "w"))
@@ -152,28 +152,29 @@ def build_bundle(run_dir, boundaries, out_dir, tile=100.0, threads=4, memory_lim
     msort = os.path.join(out_dir, "molecules_sorted.parquet")
     con.execute(f"""
 COPY (
-  SELECT CAST(m.x AS REAL) AS x, CAST(m.y AS REAL) AS y, g.code AS gene,
-         CAST(CASE m.action WHEN 'keep' THEN 0 WHEN 'move' THEN 1 ELSE 2 END AS TINYINT) AS act,
+  SELECT CAST(m.x_location AS REAL) AS x, CAST(m.y_location AS REAL) AS y, g.code AS gene,
+         CAST(CASE m.celldot_fate WHEN 'keep' THEN 0 WHEN 'move' THEN 1 ELSE 2 END AS TINYINT) AS act,
          o.pos AS old, COALESCE(n.pos, -1) AS new
   FROM read_parquet('{mol}') m
-  JOIN gene_map g ON m.gene = g.name
-  JOIN cells_map o ON m.old_host = o.cell_id
-  LEFT JOIN cells_map n ON m.new_host = n.cell_id
-  ORDER BY CAST(floor(m.y / {tile}) AS INTEGER), CAST(floor(m.x / {tile}) AS INTEGER)
+  JOIN gene_map g ON CAST(m.feature_name AS VARCHAR) = g.name
+  JOIN cells_map o ON CAST(m.cell_id AS VARCHAR) = o.cell_id
+  LEFT JOIN cells_map n ON CAST(m.celldot_cell_id AS VARCHAR) = n.cell_id
+  WHERE m.celldot_fate IN ('keep', 'move', 'drop')
+  ORDER BY CAST(floor(m.y_location / {tile}) AS INTEGER), CAST(floor(m.x_location / {tile}) AS INTEGER)
 ) TO '{msort}' (FORMAT PARQUET, ROW_GROUP_SIZE 200000, COMPRESSION zstd)""")
-    n_in_mol = con.execute(f"SELECT count(*) FROM read_parquet('{mol}')").fetchone()[0]
+    n_in_mol = con.execute(f"SELECT count(*) FROM read_parquet('{mol}') WHERE celldot_fate IN ('keep', 'move', 'drop')").fetchone()[0]
     ntx, x0, x1, y0, y1 = con.execute(f"SELECT count(*), min(x), max(x), min(y), max(y) FROM read_parquet('{msort}')").fetchone()
-    assert ntx == n_in_mol, f"{n_in_mol - ntx} molecules reference a gene or cell absent from cleaned.h5ad"
+    assert ntx == n_in_mol, f"{n_in_mol - ntx} evaluated molecules reference a gene or cell absent from cleaned.h5ad"
     fate = dict(con.execute(f"SELECT act, count(*) FROM read_parquet('{msort}') GROUP BY act").fetchall()); con.close()
     L(f"molecules_sorted.parquet: {ntx:,} molecules | fate keep {fate.get(0,0):,} move {fate.get(1,0):,} drop {fate.get(2,0):,}")
 
     ex = dict(xmin=float(min(x0, np.nanmin(xmin))), xmax=float(max(x1, np.nanmax(xmax))), ymin=float(min(y0, np.nanmin(ymin))), ymax=float(max(y1, np.nanmax(ymax))))
-    meta = {"dataset": R["prov"].get("dataset", os.path.basename(os.path.abspath(run_dir))), "provenance": R["prov"],
+    meta = {"dataset": R["prov"].get("dataset", os.path.basename(os.path.dirname(os.path.abspath(h5ad)))), "provenance": R["prov"],
             "n_cells": int(N), "n_cells_total": int(NT), "n_cells_polygon": int(has.sum()), "n_tx": int(ntx), "n_genes": G,
             "extent": ex, "types": types, "type_colors": [PALETTE[i % len(PALETTE)] for i in range(len(types))],
             "type_counts": [int((R["typ"] == t).sum()) for t in types],
             "fate": {"keep": int(fate.get(0, 0)), "move": int(fate.get(1, 0)), "drop": int(fate.get(2, 0))},
-            "tile": float(tile), "built": time.strftime("%Y-%m-%d %H:%M:%S"), "run_dir": os.path.abspath(run_dir), "boundaries": os.path.abspath(boundaries)}
+            "tile": float(tile), "built": time.strftime("%Y-%m-%d %H:%M:%S"), "h5ad": os.path.abspath(h5ad), "transcripts": os.path.abspath(transcripts), "boundaries": os.path.abspath(boundaries)}
     json.dump(meta, open(os.path.join(out_dir, "meta.json"), "w"), indent=1)
     L(f"DONE -> {out_dir}")
     return meta

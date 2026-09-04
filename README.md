@@ -17,8 +17,8 @@ The decision combines a paired single-cell reference (which genes each cell type
 distance, a per-cell *expression capacity* (a cell cannot hold more of a gene than its type is expected to
 express) and a per-cell *background capacity* measured from the extracellular molecules of the same
 section. There is no training and nothing to tune: one operating point was used for every dataset in the
-paper. The output is a corrected cell × gene matrix **and** a traceable fate for each molecule, which the
-bundled viewer lets you inspect cell by cell.
+paper. The output is a corrected cell × gene matrix **and** the input transcript table written back with the
+fate of every molecule, which the bundled viewer lets you inspect cell by cell.
 
 ---
 
@@ -73,46 +73,45 @@ excludes unassigned molecules within 3 µm of a cell before estimating the backg
 
 ## Outputs
 
-Everything is written to `--out`. **Cells are identified only by their original `cell_id`**, exactly as in
-`cells.parquet` and `transcripts.parquet` (stored as strings). There is no separate integer cell index.
+A run produces **two files** in `--out`: `cleaned.h5ad` (the cells) and `transcripts.parquet` (the molecules).
+**Cells are identified only by their original `cell_id`** and **molecules only by their row in the platform's
+`transcripts.parquet`**: the output table is that file, row for row and with every original column, plus
+CellDot's decision. There is no separate integer index anywhere.
 
 ### `cleaned.h5ad`
 
 ```python
 import anndata as ad
 A = ad.read_h5ad("celldot/cleaned.h5ad")
-A.obs_names            # the original cell ids
+A.obs_names            # the original cell ids (strings)
 A.layers["celldot"]    # corrected counts  (A.layers["raw"] = before; A.layers["greedy"] = no-capacity baseline)
-A.obs[["type", "x_centroid", "y_centroid", "n_dropped", "n_moved_out", "n_moved_in", "drop_frac", "mu_bg"]]
+A.obs["type"]          # the cell type used for the run, plus x/y_centroid, n_dropped, n_moved_out, n_moved_in, drop_frac, mu_bg
 A.var["lambda0"]       # per-gene background density (molecules / µm²)
 A.uns["celldot"]       # provenance: version, parameters, run_id, fate totals
 ```
 
-### `molecules.parquet`
+### `transcripts.parquet`
 
-One row per molecule that entered the run (quality ≥ 20, panel gene, assigned to a labelled cell):
+The platform's `transcripts.parquet` with the same rows in the same order (row groups included) and every
+original column unchanged (`transcript_id`, `cell_id`, `feature_name`, `x_location`, `y_location`, `qv`, …),
+plus two columns:
 
 | column | content |
 |---|---|
-| `x`, `y` | position (µm) |
-| `gene` | gene name |
-| `old_host` | the cell the platform assigned the molecule to (`cell_id`) |
-| `new_host` | the cell it belongs to after correction (`cell_id`); **empty string** when removed as background |
-| `action` | `keep`, `move` or `drop` |
-
-String columns are dictionary-encoded, so the file stays compact even for a billion molecules.
+| `celldot_cell_id` | the cell the molecule belongs to after correction, in the same dtype and vocabulary as `cell_id`; the platform's own "no cell" value (`UNASSIGNED`, or `-1` in older Xenium exports) when it is background |
+| `celldot_fate` | `keep` (stays in `cell_id`), `move` (reassigned to `celldot_cell_id`), `drop` (removed as background), `background` (was extracellular in the input; unchanged), `not_evaluated` (quality below `qv`, gene outside the panel, or host cell without a label; unchanged) |
 
 ```python
 import pandas as pd
-m = pd.read_parquet("celldot/molecules.parquet")
-m.action.value_counts()
-moved = m[m.action == "move"]                       # every reassigned molecule: from old_host to new_host
-m[m.old_host == "aaabbccd-1"]                       # the fate of one cell's molecules
+t = pd.read_parquet("celldot/transcripts.parquet")
+t.celldot_fate.value_counts()
+moved = t[t.celldot_fate == "move"]                  # every reassigned molecule: from cell_id to celldot_cell_id
+t[t.cell_id == "aaabbccd-1"]                         # the fate of one cell's molecules
 ```
 
-The corrected matrix is exactly the kept molecules counted by `new_host` × `gene`, and
-`celldot.read_provenance(path)` returns the same provenance record from either file (a matched pair shares
-`run_id`).
+`A.layers["celldot"]` is exactly the `keep` and `move` rows counted by `celldot_cell_id` × `feature_name`,
+and `A.layers["raw"]` the `keep`, `move` and `drop` rows counted by `cell_id`. `celldot.read_provenance(path)`
+returns the same provenance record from either file (a matched pair shares `run_id`).
 
 ### Other files
 
@@ -122,8 +121,11 @@ The corrected matrix is exactly the kept molecules counted by `new_host` × `gen
 
 ## The viewer
 
+Three files are all it needs: the two CellDot outputs and the platform's cell boundaries.
+
 ```bash
-celldot-view --run <out dir> --boundaries <cell_boundaries.parquet>   # then open http://127.0.0.1:8765
+celldot-view --run <out dir> --boundaries <cell_boundaries.parquet>     # then open http://127.0.0.1:8765
+celldot-view --h5ad cleaned.h5ad --transcripts transcripts.parquet --boundaries cell_boundaries.parquet
 ```
 
 An interactive, Xenium-Explorer-style map of the section built on deck.gl, with a small DuckDB server
@@ -141,21 +143,16 @@ panel and on a whole-transcriptome section with a billion molecules.
 - **Find** a cell by id or jump to coordinates; the URL keeps the view and the selected genes, so it can
   be shared; save the current view as PNG; the status bar reports fate fractions inside the view.
 
-The first launch builds a query bundle next to the run (`<out>/viewer_bundle/`, roughly the size of the
-molecule table; a minute per hundred million molecules). Use `--rebuild` after re-running CellDot,
+The first launch builds a query bundle next to the h5ad (`viewer_bundle/`, a few hundred MB per hundred
+million molecules; about a minute per hundred million molecules). Use `--rebuild` after re-running CellDot,
 `--port` to change the port, `--no-browser` on a server (then tunnel the port with ssh).
 
-## Results from the research package (`spdenoise`)
+## Relation to the research package (`spdenoise`)
 
 CellDot is the release form of the `spdenoise` research code and gives **exactly** the same result; only
-the identity scheme changed (spdenoise numbered cells and genes by position). Convert an old result so the
-viewer and other CellDot tools can read it:
-
-```bash
-celldot-convert --h5ad bench.h5ad --molecules molecules.parquet --out <dir> [--cells-index cells_index.parquet]
-```
-
-`tests/compare_outputs.py --celldot <dir> --spdenoise <dir>` checks two runs against each other.
+the identity scheme and the output files changed (spdenoise numbered cells and genes by position and wrote
+its own molecule table). `tests/compare_outputs.py --celldot <dir> --spdenoise <dir>` checks a run of each
+against the other.
 
 ## Parameters
 
@@ -189,7 +186,7 @@ memory needs are modest.
 ```bash
 python tests/test_neighborhood_decode.py    # window decode against a brute-force reference
 python tests/test_equivalence.py            # synthetic Xenium-style data: output contract, CLI, viewer
-                                            # inputs, and exact equality with spdenoise if present
+                                            # bundle, and exact equality with spdenoise if present
 ```
 
 ## Layout
@@ -199,7 +196,6 @@ python tests/test_equivalence.py            # synthetic Xenium-style data: outpu
 | `celldot/engine.py` | the solver (Sinkhorn with capacities, window decode, background estimators) |
 | `celldot/prep.py`, `celldot/run.py` | the two stages; `config.py` holds `CellDotConfig` |
 | `celldot/viewer/` | `celldot-view`: bundle builder, DuckDB API server, deck.gl front end |
-| `celldot/convert.py` | `celldot-convert` |
 | `tests/` | unit and end-to-end tests, output comparison, synthetic data generator |
 
 ## Citation

@@ -4,7 +4,7 @@ Parameterised by ``CellDotConfig``. Labels are supplied externally (annotation i
   rho_tilde.parquet            type x panel-gene row-normalised reference composition (the external prior)
   rho_tilde_corrected.parquet  RCTD-style gamma-corrected prior (USED BY THE MODEL; see below)
   cells_index.parquet          cell_id, type, x_centroid, y_centroid  (typed cells; the cell table)
-  assign/shard_*.parquet       per-molecule x,y,gene(idx),cell_id(host)  (qv>=QV, panel genes, assigned to typed cells)
+  assign/shard_*.parquet       per-molecule x,y,gene(idx),cell_id(host),tx_row (row in transcripts.parquet)  (qv>=QV, panel genes, typed host)
   ambient_profile_ag.parquet   gene,a_g  (extracellular soup shrunk LAM toward panel mean)
   dataset_meta.json            N_NEG_CW,N_GENES_PANEL,f_bg,counts
 
@@ -73,7 +73,7 @@ def prep(cfg):
     # ---------- scan transcripts -> assign shards + soup + platform pseudobulk ----------
     for f in glob.glob(cfg.assign_dir + "/shard_*.parquet"): os.remove(f)
     pf = pq.ParquetFile(cfg.TX); NRG = pf.num_row_groups
-    soup = np.zeros(G, np.float64); n_soup = n_assigned = n_tx_total = 0; neg_cw = set()
+    soup = np.zeros(G, np.float64); n_soup = n_assigned = n_tx_total = 0; neg_cw = set(); unassigned_value = None
     obs_g = np.zeros(G, np.float64); cell_tot = np.zeros(len(ci), np.float64)       # assigned pseudobulk for gamma
     MPIX = 20.0; MPAD = 200.0                                                       # tissue-mask density grid (20µm)
     mx0 = float(ci.x_centroid.min() - MPAD); my0 = float(ci.y_centroid.min() - MPAD)
@@ -83,7 +83,7 @@ def prep(cfg):
         t = pf.read_row_group(rg, columns=["feature_name", "x_location", "y_location", "cell_id", "qv"]).to_pandas()
         fn = t.feature_name
         if len(fn) and isinstance(fn.iloc[0], (bytes, bytearray)): fn = fn.str.decode("utf-8")
-        t["feature_name"] = fn.astype(str); n_tx_total += len(t)
+        t["feature_name"] = fn.astype(str); off = n_tx_total; n_tx_total += len(t)              # off = global row of t[0]
         neg_cw |= set(x for x in t.feature_name.unique() if x.startswith("NegControlCodeword"))
         q = t[t.qv >= cfg.qv]; cq = q.cell_id.astype(str); is_panel = q.feature_name.isin(gidx)
         qp = q[is_panel]                                              # all panel transcripts → tissue-mask density
@@ -92,14 +92,17 @@ def prep(cfg):
             _my = np.clip(((qp.y_location.values - my0) / MPIX).astype(np.int64), 0, mny - 1)
             np.add.at(Hmask, (_mx, _my), 1.0)
         s = q[is_panel & cq.isin(SENT)]                               # extracellular soup
-        if len(s): np.add.at(soup, s.feature_name.map(gidx).values, 1.0); n_soup += len(s)
+        if len(s):
+            np.add.at(soup, s.feature_name.map(gidx).values, 1.0); n_soup += len(s)
+            if unassigned_value is None: unassigned_value = s.cell_id.iloc[0]      # the platform's own "no cell" value, in its dtype
         a = q[is_panel & cq.isin(cid2pos)]                           # assigned to a typed cell
         if len(a):
             _g = a.feature_name.map(gidx).values.astype(np.int64); _cid = a.cell_id.astype(str)
             _h = _cid.map(cid2pos).values.astype(np.int64)
             np.add.at(obs_g, _g, 1.0); np.add.at(cell_tot, _h, 1.0)
             pd.DataFrame({"x": a.x_location.values.astype(np.float32), "y": a.y_location.values.astype(np.float32),
-                          "gene": _g.astype(np.int32), "cell_id": pd.Categorical(_cid.values)}   # host = original cell_id (dictionary-encoded)
+                          "gene": _g.astype(np.int32), "cell_id": pd.Categorical(_cid.values),   # host = original cell_id (dictionary-encoded)
+                          "tx_row": (off + a.index.values).astype(np.int64)}                   # row of the molecule in transcripts.parquet
                          ).to_parquet(f"{cfg.assign_dir}/shard_{rg:04d}.parquet", index=False)
             n_assigned += len(a)
         if rg % 8 == 0 or rg == NRG - 1: log(f"  rg {rg+1}/{NRG} tx={n_tx_total:,} assigned={n_assigned:,} soup={n_soup:,}")
@@ -141,7 +144,8 @@ def prep(cfg):
     json.dump(dict(dataset=cfg.dataset, n_cells=int(len(ci)), n_types=int(len(types_present)), n_genes=int(G),
                    n_tx_total=int(n_tx_total), n_assigned=int(n_assigned), n_soup=int(n_soup),
                    A_tissue_mask=round(A_tissue_mask, 1), A_intra=round(A_intra, 1), A_extra=round(A_extra, 1),
-                   N_NEG_CW=int(N_NEG_CW), N_GENES_PANEL=int(G), f_bg=round(f_bg, 6), types=types_present),
+                   N_NEG_CW=int(N_NEG_CW), N_GENES_PANEL=int(G), f_bg=round(f_bg, 6), types=types_present,
+                   unassigned_value=(unassigned_value.item() if hasattr(unassigned_value, "item") else unassigned_value)),
               open(cfg.meta, "w"), indent=1)
     log(f"DONE prep  cells={len(ci)} genes={G} types={len(types_present)} assigned_tx={n_assigned:,} "
         f"soup_top={panel[int(soup.argmax())]} A_extra(mask)={A_extra:.3e} f_bg={f_bg:.6f}")

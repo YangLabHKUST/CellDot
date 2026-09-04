@@ -18,7 +18,6 @@ dependencies = [
 [project.scripts]
 celldot = "celldot.__main__:main"
 celldot-view = "celldot.viewer.__main__:main"
-celldot-convert = "celldot.convert:main"
 
 [project.optional-dependencies]
 viewer = ["duckdb>=0.10", "fastapi", "uvicorn", "h5py"]   # celldot-view

@@ -1,9 +1,9 @@
 """Compare a CellDot run against a spdenoise (v0.1.1) run on the SAME inputs — the two must agree exactly.
 
 spdenoise names cells by integer row (cells_index.parquet 'row' -> cell_id; molecules old/new_host = row,
--1 = dropped; molecules gene = var index). CellDot names them by the original cell_id (obs_names; molecules
-old/new_host = cell_id, "" = dropped; gene = name). This maps the spdenoise output onto the cell_id scheme
-and checks every layer, obs column, molecule fate and provenance count.
+-1 = dropped; molecules gene = var index). CellDot names them by the original cell_id (obs_names) and writes the
+input transcripts.parquet back with celldot_cell_id / celldot_fate. This maps the spdenoise output onto the
+cell_id scheme and checks every layer, obs column, the multiset of molecule fates and every provenance count.
 
     python compare_outputs.py --celldot <out_dir> --spdenoise <out_dir>      # default file names
     python compare_outputs.py --celldot-h5ad … --celldot-mol … --spd-h5ad … --spd-mol … --spd-cells-index …
@@ -36,23 +36,31 @@ def compare(cd_h5ad, cd_mol, spd_h5ad, spd_mol, spd_cells_index, cd_prep=None, s
     res["obs.type"] = bool((A.obs["type"].astype(str).values == B.obs["type"].astype(str).values).all())
     res["var.lambda0"] = bool(np.array_equal(A.var["lambda0"].values, B.var["lambda0"].values))
 
-    # molecules: compare through dictionary CODES (no per-row string materialisation; the BC table has ~40M rows)
-    ma = pq.read_table(cd_mol, read_dictionary=["gene", "old_host", "new_host", "action"]).to_pandas()
+    # molecules: CellDot's transcripts.parquet (input rows + celldot_cell_id/celldot_fate) vs spdenoise's molecules.parquet
+    # (tile order, integer rows). Both are reduced to (x, y, gene, source, destination, fate) keys and compared as MULTISETS.
+    import pyarrow.compute as pc
+    ta = pq.read_table(cd_mol, columns=["x_location", "y_location", "feature_name", "cell_id", "celldot_cell_id", "celldot_fate"],
+                       filters=pc.field("celldot_fate").isin(["keep", "move", "drop"]))
     mb = pq.read_table(spd_mol, read_dictionary=["action"]).to_pandas()
-    res["mol_nrows"] = len(ma) == len(mb)
+    res["mol_nrows"] = ta.num_rows == len(mb)
     if res["mol_nrows"]:
-        res["mol_xy"] = bool(np.array_equal(ma["x"].values, mb["x"].values) and np.array_equal(ma["y"].values, mb["y"].values))
-        def codes(col): return col.cat.codes.values.astype(np.int64), pd.Index(col.cat.categories.astype(str))
-        gc, gcat = codes(ma["gene"]); g_map = gcat.get_indexer(np.asarray(list(B.var_names), dtype=object))   # spd gene idx -> celldot code
-        res["mol_gene"] = bool((g_map >= 0).all() and np.array_equal(gc, g_map[mb["gene"].values.astype(np.int64)]))
-        oc, ocat = codes(ma["old_host"]); nc, ncat = codes(ma["new_host"])
-        o_map = ocat.get_indexer(cid_spd); n_map = ncat.get_indexer(cid_spd); n_empty = ncat.get_loc("") if "" in ncat else -2
-        res["mol_old_host"] = bool((o_map >= 0).all() and np.array_equal(oc, o_map[mb["old_host"].values.astype(np.int64)]))
-        nh = mb["new_host"].values.astype(np.int64)
-        res["mol_new_host"] = bool((n_map >= 0).all() and n_empty >= 0 and np.array_equal(nc, np.where(nh >= 0, n_map[np.clip(nh, 0, None)], n_empty)))
-        ac, acat = codes(ma["action"]); a_b = mb["action"].astype("category"); a_map = acat.get_indexer(a_b.cat.categories.astype(str))
-        res["mol_action"] = bool((a_map >= 0).all() and np.array_equal(ac, a_map[a_b.cat.codes.values.astype(np.int64)]))
-        res["mol_drop<->empty_new_host"] = bool(np.array_equal(ac == acat.get_loc("drop"), nc == n_empty))
+        gI = pd.Index(list(B.var_names)); cI = pd.Index(cid_spd)
+        def strs(col): return np.asarray(col.cast("string").to_numpy(zero_copy_only=False), dtype=object)
+        ka = np.rec.fromarrays([ta.column("x_location").to_numpy().astype(np.float32), ta.column("y_location").to_numpy().astype(np.float32),
+                                gI.get_indexer(strs(ta.column("feature_name"))).astype(np.int32), cI.get_indexer(strs(ta.column("cell_id"))).astype(np.int32),
+                                cI.get_indexer(strs(ta.column("celldot_cell_id"))).astype(np.int32),
+                                pd.Categorical(strs(ta.column("celldot_fate")), categories=["keep", "move", "drop"]).codes.astype(np.int8)], names="x,y,g,o,n,a")
+        kb = np.rec.fromarrays([mb["x"].values.astype(np.float32), mb["y"].values.astype(np.float32), mb["gene"].values.astype(np.int32),
+                                mb["old_host"].values.astype(np.int32), mb["new_host"].values.astype(np.int32),
+                                pd.Categorical(mb["action"].astype(str), categories=["keep", "move", "drop"]).codes.astype(np.int8)], names="x,y,g,o,n,a")
+        res["mol_all_resolved"] = bool((ka.g >= 0).all() and (ka.o >= 0).all() and ((ka.n >= 0) == (ka.a != 2)).all())
+        ka.sort(); kb.sort()
+        res["mol_multiset_equal"] = bool(np.array_equal(ka, kb))
+        res["mol_fate_counts"] = bool(np.array_equal(np.bincount(ka.a, minlength=3), np.bincount(kb.a, minlength=3)))
+        ma_n = int(ta.num_rows)
+    else:
+        ma_n = int(ta.num_rows)
+    ma = {"n": ma_n}
     pa_ = A.uns.get("celldot", {}); pb_ = B.uns.get("spd", {})
     for k in ["n_tx", "n_cells", "n_genes", "n_types", "n_keep", "n_move", "n_drop", "drop_frac", "ambient_density"]:
         res[f"prov.{k}"] = pa_.get(k) == pb_.get(k)
@@ -65,11 +73,13 @@ def compare(cd_h5ad, cd_mol, spd_h5ad, spd_mol, spd_cells_index, cd_prep=None, s
             x = pd.read_parquet(cd_prep[name]); y = pd.read_parquet(spd_prep[name]); res[f"prep.{name}"] = x.equals(y)
         cx = pd.read_parquet(cd_prep["cells_index"]); cy = pd.read_parquet(spd_prep["cells_index"]).sort_values("row").drop(columns=["row"]).reset_index(drop=True)
         cy["cell_id"] = cy["cell_id"].astype(str); res["prep.cells_index"] = cx.reset_index(drop=True).equals(cy)
-        mx = json.load(open(cd_prep["meta"])); my = json.load(open(spd_prep["meta"])); mx.pop("dataset", None); my.pop("dataset", None); res["prep.meta"] = mx == my
+        mx = json.load(open(cd_prep["meta"])); my = json.load(open(spd_prep["meta"]))
+        for k in ("dataset", "unassigned_value"): mx.pop(k, None); my.pop(k, None)          # CellDot-only / naming keys
+        res["prep.meta"] = mx == my
     ok = all(bool(v) for v in res.values())
     w = max(len(k) for k in res)
     for k, v in res.items(): log(f"  {k:<{w}}  {'OK' if v else 'MISMATCH'}")
-    log(f"cells {A.n_obs:,} | molecules {len(ma):,} | keep/move/drop {pa_.get('n_keep'):,}/{pa_.get('n_move'):,}/{pa_.get('n_drop'):,} | "
+    log(f"cells {A.n_obs:,} | molecules {ma['n']:,} | keep/move/drop {pa_.get('n_keep'):,}/{pa_.get('n_move'):,}/{pa_.get('n_drop'):,} | "
         f"celldot run_id {pa_.get('run_id')} v{pa_.get('version')} vs spdenoise run_id {pb_.get('run_id')} v{pb_.get('version')}")
     log("RESULT: " + ("IDENTICAL" if ok else "DIFFERENT"))
     return ok, res
@@ -77,13 +87,13 @@ def compare(cd_h5ad, cd_mol, spd_h5ad, spd_mol, spd_cells_index, cd_prep=None, s
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--celldot", help="CellDot output dir (cleaned.h5ad, molecules.parquet, …)")
+    ap.add_argument("--celldot", help="CellDot output dir (cleaned.h5ad, transcripts.parquet, …)")
     ap.add_argument("--spdenoise", help="spdenoise output dir (cleaned.h5ad, molecules.parquet, cells_index.parquet)")
     ap.add_argument("--celldot-h5ad"); ap.add_argument("--celldot-mol")
     ap.add_argument("--spd-h5ad"); ap.add_argument("--spd-mol"); ap.add_argument("--spd-cells-index")
     ap.add_argument("--prep", action="store_true", help="also compare prep artefacts found in the two dirs")
     a = ap.parse_args()
-    cd_h = a.celldot_h5ad or os.path.join(a.celldot, "cleaned.h5ad"); cd_m = a.celldot_mol or os.path.join(a.celldot, "molecules.parquet")
+    cd_h = a.celldot_h5ad or os.path.join(a.celldot, "cleaned.h5ad"); cd_m = a.celldot_mol or os.path.join(a.celldot, "transcripts.parquet")
     sp_h = a.spd_h5ad or os.path.join(a.spdenoise, "cleaned.h5ad"); sp_m = a.spd_mol or os.path.join(a.spdenoise, "molecules.parquet")
     sp_c = a.spd_cells_index or os.path.join(a.spdenoise, "cells_index.parquet")
     prep = None
