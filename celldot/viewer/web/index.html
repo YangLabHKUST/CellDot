@@ -70,7 +70,7 @@
     <input id="gene" type="text" list="genelist" placeholder="type a gene, Enter to add…" autocomplete="off">
     <datalist id="genelist"></datalist>
     <div class="chips" id="chips"></div>
-    <div class="row" style="margin-top:6px"><label><input type="checkbox" id="allgenes" checked> all genes when zoomed in (&lt; <span id="allw">800</span> µm)</label></div>
+    <div class="row" style="margin-top:6px"><label><input type="checkbox" id="allgenes"> all genes when zoomed in (&lt; <span id="allw">800</span> µm)</label></div>
     <div class="row"><span class="mut small" style="width:52px">colour</span>
       <div class="seg" id="txmode" style="flex:1"><button data-v="fate" class="on">fate</button><button data-v="gene">gene</button></div></div>
     <div class="row" id="fatefilter">
@@ -96,8 +96,8 @@
         <option value="none">no fill</option>
       </select></div>
     <div class="row" id="exprrow" style="display:none"><span class="mut small" style="width:52px">gene</span><input id="exprgene" type="text" list="genelist" placeholder="gene for the fill" style="flex:1" autocomplete="off"></div>
-    <div class="row"><label><input type="checkbox" id="outlines" checked> outlines</label>
-      <span class="mut small" style="margin-left:8px">opacity</span><input type="range" id="fillop" min="0.1" max="1" step="0.05" value="0.75" style="max-width:110px"></div>
+    <div class="row"><label><input type="checkbox" id="outlines"> outlines</label>
+      <span class="mut small" style="margin-left:8px">opacity</span><input type="range" id="fillop" min="0.1" max="1" step="0.05" value="0.6" style="max-width:110px"></div>
     <div id="legend"></div>
   </div>
 
@@ -263,7 +263,7 @@ function status(){
   s += hideSame ? `moves within one cell type (<b>${msp}</b>) drawn as kept<br>` : `moves within one cell type: <b>${msp}</b><br>`;
   s += POLYS ? `${fmt(POLYS.n)} cell polygons${POLYS.sampled ? " (sampled)" : ""}` : `cells as points (zoom in below ${fmt(POLY_MAX_W)} µm for polygons)`;
   if(TX) s += `<br>${fmt(TX.n)}${TX.sampled ? " of " + fmt(TX.total) : ""} molecules drawn${TX.all ? " (all genes)" : ""}${TX.sampled ? " · sampled" : ""}`;
-  else if(!selGenes.length) s += `<br><span style="color:#e8a33d">add a gene, or zoom in below ${ALL_GENES_W} µm, to see molecules</span>`;
+  else if(!selGenes.length) s += `<br><span style="color:#e8a33d">${$("#allgenes").checked ? `add a gene, or zoom in below ${ALL_GENES_W} µm, to see molecules` : "add a gene (or tick 'all genes when zoomed in') to see molecules"}</span>`;
   s += `<br>view width ${viewW >= 1000 ? (viewW/1000).toFixed(2)+" mm" : viewW.toFixed(0)+" µm"}`;
   $("#status").innerHTML = s;
 }
