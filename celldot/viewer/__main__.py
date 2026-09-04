@@ -18,6 +18,7 @@ def main():
     ap.add_argument("--host", default="127.0.0.1"); ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--threads", type=int, default=4, help="DuckDB threads"); ap.add_argument("--tile", type=float, default=100.0, help="spatial sort tile (um)")
     ap.add_argument("--memory-limit", default="8GB", help="DuckDB memory limit while building the bundle")
+    ap.add_argument("--view", help="view file with the opening view / bookmarks / colours (default: celldot_view.json next to the h5ad, if it exists)")
     ap.add_argument("--no-browser", action="store_true")
     a = ap.parse_args()
     h5 = a.h5ad or (os.path.join(a.run, "cleaned.h5ad") if a.run else None)
@@ -36,7 +37,12 @@ def main():
     if a.prep_only: return
     from .server import create_app
     import uvicorn
-    app = create_app(bundle, threads=a.threads); m = app.state.meta
+    view_file = a.view or os.path.join(os.path.dirname(os.path.abspath(h5)), "celldot_view.json")
+    writable = a.host in ("127.0.0.1", "localhost", "::1")
+    app = create_app(bundle, threads=a.threads, view_file=view_file, view_writable=writable); m = app.state.meta
+    if os.path.exists(view_file):
+        try: vf = json.load(open(view_file)); print(f"view file {view_file}: " + ("default view" if vf.get("default") else "no default view") + f", {len(vf.get('bookmarks', []))} bookmarks", flush=True)
+        except Exception as e: print(f"view file {view_file} could not be read: {e}", flush=True)
     url = f"http://{a.host}:{a.port}"
     print(f"CellDot viewer [{m['dataset']}]  {m['n_cells']:,} cells  {m['n_tx']:,} molecules  {m['n_genes']:,} genes\n  -> {url}", flush=True)
     if not a.no_browser: threading.Timer(1.0, lambda: webbrowser.open(url)).start()

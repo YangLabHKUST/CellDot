@@ -103,7 +103,9 @@
 
   <div class="sec">
     <h2>View</h2>
+    <div class="row" id="viewfile" style="display:none"><span class="mut small" style="width:52px">views</span><div class="chips" id="bookmarks" style="margin-top:0;flex:1"></div></div>
     <div class="row"><button class="btn" id="fit">fit to tissue</button><button class="btn" id="shot">save PNG</button><button class="btn" id="clear">clear selection</button></div>
+    <div class="row" id="viewsave" style="display:none"><button class="btn" id="setdefault" title="the viewer opens on the current view, genes and settings next time (writes celldot_view.json next to cleaned.h5ad)">set as default view</button><button class="btn" id="addbm">add bookmark</button></div>
     <div class="row small mut"><span class="hint"><span class="kbd">F</span> fit</span> <span class="hint"><span class="kbd">Esc</span> clear</span> <span class="hint"><span class="kbd">A</span> arrows</span> <span class="hint"><span class="kbd">S</span> same-type moves</span> <span class="hint">scroll / drag to zoom and pan</span></div>
   </div>
 </div>
@@ -126,7 +128,7 @@ let META, GENES, GIDX = {}, C = null, NT = 0, NRUN = 0, TYPECOL = [], typeOff = 
 let selGenes = [], txMode = "fate", cellMode = "type", exprGene = null, EXPR = {raw:null, clean:null, gene:null, vmax:1};
 let hideSame = true;                                                 // same-type moves drawn as kept (toggle, top right)
 const eff = (m, k) => (hideSame && m.act[k] === 1 && m.same[k]) ? 0 : m.act[k];   // fate as drawn
-let POLYS = null, TX = null, FOCUS = null, deckgl, timers = {}, ctrl = {}, lastKey = {}, viewW = 1e9;
+let POLYS = null, TX = null, FOCUS = null, deckgl, timers = {}, ctrl = {}, lastKey = {}, viewW = 1e9, VIEWCFG = {};
 const hexRGB = h => [parseInt(h.slice(1,3),16), parseInt(h.slice(3,5),16), parseInt(h.slice(5,7),16)];
 const fmt = n => n.toLocaleString();
 
@@ -146,6 +148,9 @@ function toast(msg, ms=2500){ const t = $("#toast"); t.textContent = msg; t.styl
 async function boot(){
   META = await (await fetch("/api/meta")).json();
   GENES = (await (await fetch("/api/genes")).json()).names; GENES.forEach((g,i)=>GIDX[g]=i);
+  try { VIEWCFG = await (await fetch("/api/view")).json(); } catch(e){ VIEWCFG = {}; }      // optional celldot_view.json
+  if(VIEWCFG.error) toast(VIEWCFG.error, 8000);
+  if(VIEWCFG.type_colors) META.types.forEach((t,i)=>{ if(VIEWCFG.type_colors[t]) META.type_colors[i] = VIEWCFG.type_colors[t]; });
   TYPECOL = META.type_colors.map(hexRGB);
   document.title = "CellDot · " + META.dataset; $("#ttl").textContent = "CellDot · " + META.dataset;
   $("#counts").innerHTML = `${fmt(META.n_cells)} cells · ${fmt(META.n_tx)} molecules · ${fmt(META.n_genes)} genes` +
@@ -156,9 +161,9 @@ async function boot(){
   C.pos2 = new Float32Array(NT*2); for(let i=0;i<NT;i++){ C.pos2[2*i]=C.cx[i]; C.pos2[2*i+1]=C.cy[i]; }
   drawLegend();
   const e = META.extent;
-  const H = readHash(); const iv = H.view || fitView();
-  if(H.same === false) $("#hidesame").checked = false;
-  hideSame = $("#hidesame").checked; $("#movenote").style.display = hideSame ? "" : "none";
+  const H = parseHash(location.hash), V0 = Object.keys(H).length ? H : normView(VIEWCFG.default);   // URL > view file > built-in
+  const iv = V0.view || fitView();
+  applySettings(V0);
   deckgl = new DeckGL({
     container: "map", views: [new OrthographicView({flipY: true})],
     initialViewState: iv, controller: {inertia: 200},
@@ -166,11 +171,76 @@ async function boot(){
     getTooltip: tooltip, layers: [],
   });
   onView(iv); render();
-  if(H.genes) H.genes.forEach(g=>selGenes.push(GIDX[g]));
+  if(V0.genes) selGenes = V0.genes.slice();
   else ["EPCAM","KRT8","PTPRC","CD3E","COL1A1"].forEach(g=>{ if(GIDX[g]!==undefined && selGenes.length<2) selGenes.push(GIDX[g]); });
-  renderChips(); scheduleAll();
-  if(H.cell){ const r = await fetch(`/api/find?cell_id=${encodeURIComponent(H.cell)}`); if(r.ok){ const d = await r.json(); if(!H.view) flyTo(d.cx, d.cy, 5); setTimeout(()=>selectCell(d.pos), H.view ? 50 : 750); } }
+  renderChips(); renderBookmarks(); scheduleAll();
+  if(V0.cell) findAndSelect(V0.cell, !V0.view);
 }
+async function findAndSelect(cellId, fly){
+  const r = await fetch(`/api/find?cell_id=${encodeURIComponent(cellId)}`); if(!r.ok){ toast(`cell "${cellId}" not found`); return; }
+  const d = await r.json(); if(fly) flyTo(d.cx, d.cy, 5); setTimeout(()=>selectCell(d.pos), fly ? 750 : 50);
+}
+// ---------- views: URL hash, view file (celldot_view.json), bookmarks ----------
+function parseHash(str){ const q = new URLSearchParams((str || "").replace(/^#/, "")); const o = {};
+  if(q.has("x") && q.has("y") && q.has("zoom")) o.view = {target:[+q.get("x"), +q.get("y"), 0], zoom: +q.get("zoom")};
+  if(q.get("genes")) o.genes = q.get("genes").split(",").map(g=>g.trim()).filter(g=>GIDX[g] !== undefined).map(g=>GIDX[g]);
+  if(q.get("same") === "0") o.same = false;
+  if(q.get("cell")) o.cell = q.get("cell");
+  return o; }
+function normView(d){                                   // view-file entry (object, or a URL hash string) -> internal view
+  if(!d) return {}; if(typeof d === "string") return parseHash(d); const o = {};
+  if(d.x !== undefined && d.y !== undefined){ const z = d.zoom !== undefined ? +d.zoom : (d.width_um > 0 ? Math.log2(innerWidth / +d.width_um) : null);
+    if(z !== null && isFinite(z)) o.view = {target:[+d.x, +d.y, 0], zoom: z}; }
+  if(Array.isArray(d.genes)){ const miss = d.genes.filter(g=>GIDX[g] === undefined); if(miss.length) toast(`view file: gene${miss.length>1?"s":""} ${miss.join(", ")} not in this panel`, 6000);
+    o.genes = d.genes.filter(g=>GIDX[g] !== undefined).map(g=>GIDX[g]); }
+  for(const k of ["same","all_genes","outlines","arrows"]) if(typeof d[k] === "boolean") o[k] = d[k];
+  if(d.opacity !== undefined) o.opacity = +d.opacity; if(d.psize !== undefined) o.psize = +d.psize;
+  if(d.cell) o.cell = String(d.cell); else if(d.cell === null) o.cell = null;
+  if(["fate","gene"].includes(d.color)) o.color = d.color;
+  if(["type","clean","raw","delta","dropfrac","movefrac","none"].includes(d.cells)) o.cells = d.cells;
+  if(d.fill_gene && GIDX[d.fill_gene] !== undefined) o.fill_gene = d.fill_gene;
+  return o; }
+function applySettings(v){
+  if(v.same !== undefined){ $("#hidesame").checked = v.same; }
+  hideSame = $("#hidesame").checked; $("#movenote").style.display = hideSame ? "" : "none";
+  if(v.all_genes !== undefined) $("#allgenes").checked = v.all_genes;
+  if(v.outlines !== undefined) $("#outlines").checked = v.outlines;
+  if(v.opacity !== undefined) $("#fillop").value = v.opacity;
+  if(v.arrows !== undefined) $("#arrows").checked = v.arrows;
+  if(v.psize !== undefined) $("#psize").value = v.psize;
+  if(v.color){ txMode = v.color; seg("#txmode", txMode); }
+  if(v.cells){ cellMode = v.cells; $("#cellmode").value = cellMode; $("#exprrow").style.display = ["raw","clean","delta"].includes(cellMode) ? "flex" : "none"; }
+  if(v.fill_gene){ $("#exprgene").value = v.fill_gene; loadExpr(v.fill_gene); }
+}
+function applyView(v, animate){                         // a bookmark, or the default view again
+  if(v.view) deckgl.setProps({initialViewState: {...v.view, transitionDuration: animate ? 700 : 0}});
+  applySettings(v); if(v.genes){ selGenes = v.genes.slice(); renderChips(); }
+  lastKey = {}; drawLegend(); render(); status(); scheduleAll(); pushHash();
+  if(v.cell) findAndSelect(v.cell, !v.view); else if(v.cell === null && FOCUS) clearSel();
+}
+function currentView(){                                 // what "set as default view" / "add bookmark" store
+  const vp = viewport(), w = vp && VS ? vp.width / Math.pow(2, VS.zoom) : viewW;
+  return {x: +VS.target[0].toFixed(1), y: +VS.target[1].toFixed(1), width_um: +w.toFixed(1), genes: selGenes.map(i=>GENES[i]),
+          cell: FOCUS ? FOCUS.cell.cell_id : null, same: hideSame, all_genes: $("#allgenes").checked, outlines: $("#outlines").checked,
+          opacity: +$("#fillop").value, arrows: $("#arrows").checked, psize: +$("#psize").value, color: txMode, cells: cellMode,
+          fill_gene: exprGene !== null && ["raw","clean","delta"].includes(cellMode) ? GENES[exprGene] : null};
+}
+function renderBookmarks(){
+  const bl = VIEWCFG.bookmarks || [], box = $("#bookmarks");
+  box.innerHTML = bl.map((b,i)=>`<span class="chip" data-i="${i}" title="${VIEWCFG._writable ? "click: go there · shift-click: remove" : "click: go there"}">${b.name}</span>`).join("");
+  box.querySelectorAll(".chip").forEach(el => el.onclick = async e => { const b = bl[+el.dataset.i];
+    if(e.shiftKey && VIEWCFG._writable){ if(confirm(`remove bookmark "${b.name}"?`)) await saveView({remove_bookmark: b.name}); return; }
+    applyView(normView(b.view), true); });
+  $("#viewfile").style.display = bl.length ? "" : "none"; $("#viewsave").style.display = VIEWCFG._writable ? "" : "none";
+}
+async function saveView(body){
+  const r = await fetch("/api/view", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)});
+  if(!r.ok){ toast("could not save the view: " + (await r.text()), 6000); return; }
+  const d = await r.json(); toast(`saved to ${d.file}`, 4000);
+  try { VIEWCFG = await (await fetch("/api/view")).json(); } catch(e){} renderBookmarks();
+}
+$("#setdefault").onclick = () => saveView({default: currentView()});
+$("#addbm").onclick = () => { const name = prompt("bookmark name"); if(name && name.trim()) saveView({bookmark: {name: name.trim(), view: currentView()}}); };
 function fitView(){
   const e = META.extent, w = e.xmax - e.xmin, h = e.ymax - e.ymin;
   return {target: [(e.xmin+e.xmax)/2, (e.ymin+e.ymax)/2, 0], zoom: Math.log2(Math.min(innerWidth/w, innerHeight/h)) - 0.15};
@@ -195,12 +265,6 @@ function onView(vs){
 function pushHash(){ clearTimeout(timers.hash); timers.hash = setTimeout(()=>{ if(!VS) return;
   const h = `#x=${VS.target[0].toFixed(1)}&y=${VS.target[1].toFixed(1)}&zoom=${VS.zoom.toFixed(2)}` + (selGenes.length ? `&genes=${selGenes.map(i=>GENES[i]).join(",")}` : "") + (hideSame ? "" : "&same=0") + (FOCUS ? `&cell=${encodeURIComponent(FOCUS.cell.cell_id)}` : "");
   history.replaceState(null, "", h); }, 300); }
-function readHash(){ const q = new URLSearchParams(location.hash.slice(1)); const o = {};
-  if(q.has("x") && q.has("y") && q.has("zoom")) o.view = {target:[+q.get("x"), +q.get("y"), 0], zoom: +q.get("zoom")};
-  if(q.get("genes")) o.genes = q.get("genes").split(",").map(g=>g.trim()).filter(g=>GIDX[g] !== undefined);
-  if(q.get("same") === "0") o.same = false;
-  if(q.get("cell")) o.cell = q.get("cell");
-  return o; }
 function scaleBar(zoom){
   const pxPerUm = Math.pow(2, zoom); const target = 140 / pxPerUm;           // µm for ~140 px
   const nice = [1,2,5].map(m=>m*Math.pow(10, Math.floor(Math.log10(target)))).concat([10*Math.pow(10, Math.floor(Math.log10(target)))]);

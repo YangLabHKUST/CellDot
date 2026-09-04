@@ -15,9 +15,13 @@ Binary responses (application/octet-stream): [uint32 header length][JSON header]
     GET /api/cell_molecules?pos=&pad=              every molecule that started in or ended in the cell
     GET /api/find?cell_id=                         locate a cell by its original id
     GET /api/summary?xmin&xmax&ymin&ymax           fate counts inside the box (keep, move, drop, move_same)
+    GET /api/view                                  the optional view file (celldot_view.json next to cleaned.h5ad): default view,
+                                                   bookmarks, type colours; {} when there is none
+    POST /api/view                                 write {"default": view} / {"bookmark": {...}} / {"remove_bookmark": name} into
+                                                   that file (only when the server is bound to localhost)
 """
 import os, json, struct, threading, numpy as np
-from fastapi import FastAPI, Response, HTTPException
+from fastapi import FastAPI, Response, HTTPException, Request
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from .prep import BUNDLE_VERSION
@@ -41,7 +45,9 @@ def _ints(s, lo, hi):
     return out
 
 
-def create_app(bundle, threads=4):
+def create_app(bundle, threads=4, view_file=None, view_writable=False):
+    """view_file: optional JSON with the opening view / bookmarks / type colours (absent for ordinary runs -> built-in
+    defaults); view_writable lets the page save into it (celldot-view enables this only for a localhost server)."""
     import duckdb
     META = json.load(open(os.path.join(bundle, "meta.json"))); GENES = json.load(open(os.path.join(bundle, "genes.json")))
     if META.get("bundle_version", 1) != BUNDLE_VERSION:
@@ -158,6 +164,27 @@ def create_app(bundle, threads=4):
             c[int(a)] = c.get(int(a), 0) + int(n)
             if int(a) == 1 and int(s) == 1: move_same += int(n)
         return JSONResponse({"keep": c.get(0, 0), "move": c.get(1, 0), "drop": c.get(2, 0), "move_same": move_same})
+
+    def read_view():
+        if not view_file or not os.path.exists(view_file): return {}
+        try:
+            d = json.load(open(view_file, encoding="utf-8")); return d if isinstance(d, dict) else {"error": "view file must hold a JSON object"}
+        except Exception as e:
+            return {"error": f"{os.path.basename(view_file)}: {e}"}
+
+    @app.get("/api/view")
+    def view():
+        d = read_view(); d["_writable"] = bool(view_writable and view_file); d["_file"] = view_file; return JSONResponse(d)
+
+    @app.post("/api/view")
+    async def save_view(req: Request):
+        if not (view_writable and view_file): raise HTTPException(403, "the view file is read-only on this server")
+        body = await req.json(); cur = read_view()
+        for k in ("_writable", "_file", "error"): cur.pop(k, None)
+        if "default" in body: cur["default"] = body["default"]
+        if "bookmark" in body: cur.setdefault("bookmarks", []).append(body["bookmark"])
+        if "remove_bookmark" in body: cur["bookmarks"] = [b for b in cur.get("bookmarks", []) if b.get("name") != body["remove_bookmark"]]
+        json.dump(cur, open(view_file, "w", encoding="utf-8"), indent=1); return JSONResponse({"ok": True, "file": view_file})
 
     @app.get("/")
     def index(): return HTMLResponse(open(os.path.join(HERE, "web", "index.html"), encoding="utf-8").read())

@@ -147,6 +147,25 @@ panel and on a whole-transcriptome section with a billion molecules.
   and the selected cell (`#cell=<cell_id>`), so a link to one cell can be shared; save the current view
   as PNG; the status bar reports fate fractions inside the view.
 
+**Opening view (optional).** The viewer opens fitted to the tissue with a couple of marker genes preselected.
+To open on a chosen scene instead, put a `celldot_view.json` next to `cleaned.h5ad` (or pass `--view`); without
+the file nothing changes, so ordinary runs need none. The easiest way to write it is the *set as default view*
+button in the View section, which stores the current position, zoom, genes, selected cell and settings; *add
+bookmark* stores named scenes that appear as buttons. By hand:
+
+```json
+{"default": {"x": 4218.7, "y": 2936.8, "width_um": 50, "genes": ["CLCA1"], "cell": null},
+ "bookmarks": [{"name": "tumor boundary", "view": {"x": 3100, "y": 2200, "width_um": 400, "genes": ["EPCAM", "PTPRC"]}},
+               {"name": "one cell", "view": "#x=898&y=1009&zoom=5&cell=abcdefgh-1"}],
+ "type_colors": {"Tumor": "#d62728", "Stroma": "#8c8c8c"}}
+```
+
+A view is an object (`x`, `y` and `width_um` or `zoom`; `genes`; `cell` or `null`; `same`, `all_genes`,
+`outlines`, `arrows`, `opacity`, `psize`; `color` fate/gene; `cells` type/clean/raw/delta/dropfrac/movefrac/none;
+`fill_gene`) or a URL hash copied from the address bar. A hash in the URL always wins over the file, so shared
+links keep working. `type_colors` overrides the palette by cell-type name, for instance to match a figure.
+Saving from the page is enabled only when the server listens on localhost.
+
 The first launch builds a query bundle next to the h5ad (`viewer_bundle/`, a few hundred MB per hundred
 million molecules; about a minute per hundred million molecules); a bundle built by an older CellDot is
 rebuilt automatically. Use `--rebuild` after re-running CellDot, `--port` to change the port,
