@@ -48,7 +48,12 @@
   #legend .t { display:flex; align-items:center; gap:6px; margin:1px 0; cursor:pointer; } #legend .t.off { opacity:.35; }
   .ramp { height:9px; border-radius:3px; margin:4px 0 2px; }
   .kbd { font-family:ui-monospace,Menlo,monospace; background:#222838; border:1px solid var(--line); border-radius:4px; padding:0 4px; font-size:10.5px; }
-  #toast { position:absolute; left:50%; top:14px; transform:translateX(-50%); background:#1c2230; border:1px solid var(--line); border-radius:8px; padding:6px 12px; display:none; }
+  #toast { position:absolute; left:50%; top:48px; transform:translateX(-50%); background:#1c2230; border:1px solid var(--line); border-radius:8px; padding:6px 12px; display:none; }
+  #loading { position:absolute; left:50%; top:12px; transform:translateX(-50%); display:none; align-items:center; gap:8px; background:rgba(20,24,33,.94);
+             border:1px solid var(--line); border-radius:9px; padding:5px 12px; font-size:12px; color:var(--fg); pointer-events:none; }
+  #loading .spin { width:12px; height:12px; border-radius:50%; border:2px solid #3a4152; border-top-color:var(--acc); animation:spin .8s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { #loading .spin { animation:none; border-top-color:var(--acc); } }
 </style>
 <div id="map"></div>
 <div id="left">
@@ -105,6 +110,7 @@
     <input type="checkbox" class="tog" id="hidesame" checked> hide moves between the same cell type</label>
 </div>
 <div id="scale"><div class="bar" id="scalebar"></div><span id="scaletxt"></span></div>
+<div id="loading"><span class="spin"></span><span id="loadtxt">loading…</span></div>
 <div id="toast"></div>
 <script src="web/vendor/deck.gl.min.js"></script>
 <script>
@@ -125,18 +131,26 @@ const TYPES = {f32:[Float32Array,4], i32:[Int32Array,4], i16:[Int16Array,2], u16
 // molecule responses carry 16-bit coordinates: x = x0 + u*sx, y = y0 + v*sy
 function txPositions(d){ const n = d.hdr.n, pos = new Float32Array(n*2), {x0, y0, sx, sy} = d.hdr; for(let k=0;k<n;k++){ pos[2*k] = x0 + d.u[k]*sx; pos[2*k+1] = y0 + d.v[k]*sy; } return pos; }
 const inside = (a, b) => a && b && a.xmin >= b.xmin && a.xmax <= b.xmax && a.ymin >= b.ymin && a.ymax <= b.ymax;   // box a within box b
-async function fetchBin(url, key){
+// "loading…" pill (top centre) while any request is in flight
+let pending = 0;
+function busy(d, what){ pending = Math.max(0, pending + d); const el = $("#loading"); if(what) $("#loadtxt").textContent = what; el.style.display = pending ? "flex" : "none"; }
+async function fetchJSON(url, what){ busy(1, what); try { const r = await fetch(url); return r; } finally { busy(-1); } }
+async function fetchBin(url, key, what){
   if(key){ if(ctrl[key]) ctrl[key].abort(); ctrl[key] = new AbortController(); }
-  const r = await fetch(url, key ? {signal: ctrl[key].signal} : {}); const buf = await r.arrayBuffer();
-  const dv = new DataView(buf), hl = dv.getUint32(0, true);
-  const hdr = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, hl))); let off = 4 + hl; const out = {hdr};
-  for(const [name, dt, n] of hdr.fields){ const [T, b] = TYPES[dt]; out[name] = new T(buf.slice(off, off + n*b)); off += n*b; }
-  return out;
+  busy(1, what || (key === "polys" ? "loading cells…" : key === "tx" ? "loading molecules…" : "loading…"));
+  try {
+    const r = await fetch(url, key ? {signal: ctrl[key].signal} : {}); const buf = await r.arrayBuffer();
+    const dv = new DataView(buf), hl = dv.getUint32(0, true);
+    const hdr = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, hl))); let off = 4 + hl; const out = {hdr};
+    for(const [name, dt, n] of hdr.fields){ const [T, b] = TYPES[dt]; out[name] = new T(buf.slice(off, off + n*b)); off += n*b; }
+    return out;
+  } finally { busy(-1); }
 }
 function toast(msg, ms=2500){ const t = $("#toast"); t.textContent = msg; t.style.display = "block"; clearTimeout(timers.toast); timers.toast = setTimeout(()=>t.style.display="none", ms); }
 
 // ---------- boot ----------
 async function boot(){
+  busy(1, "loading…");
   META = await (await fetch("api/meta")).json();
   GENES = (await (await fetch("api/genes")).json()).names; GENES.forEach((g,i)=>GIDX[g]=i);
   try { VIEWCFG = await (await fetch("api/view")).json(); } catch(e){ VIEWCFG = {}; }      // optional celldot_view.json
@@ -149,7 +163,7 @@ async function boot(){
   $("#genelist").innerHTML = GENES.slice(0, 20000).map(g=>`<option value="${g}">`).join("");
   $("#allw").textContent = ALL_GENES_W;
   $("#counts").title = "keys: F fit to tissue · Esc clear selection · A arrows · S same-type moves · P save PNG · shift+D set as default view · shift+B add bookmark";
-  C = await fetchBin("api/cells"); NT = C.hdr.n; NRUN = C.hdr.n_run;
+  C = await fetchBin("api/cells", null, "loading cells…"); NT = C.hdr.n; NRUN = C.hdr.n_run; busy(-1);
   C.pos2 = new Float32Array(NT*2); for(let i=0;i<NT;i++){ C.pos2[2*i]=C.cx[i]; C.pos2[2*i+1]=C.cy[i]; }
   drawLegend();
   const e = META.extent;
@@ -405,10 +419,10 @@ function typeName(p){ const t = C.type[p]; return t >= 0 ? META.types[t] : "unla
 
 // ---------- selected cell ----------
 async function selectCell(pos){
-  const d = await (await fetch(`api/cell?pos=${pos}`)).json();
+  const d = await (await fetchJSON(`api/cell?pos=${pos}`, "loading cell…")).json();
   let poly = null; if(POLYS){ for(let k=0;k<POLYS.n;k++) if(POLYS.pos[k]===pos){ const s=POLYS.start[k]*2, e=POLYS.start[k+1]*2; poly = []; for(let j=s;j<e;j+=2) poly.push([POLYS.xy[j], POLYS.xy[j+1]]); break; } }
   FOCUS = {pos, cell: d, poly, tx: null};
-  if(d.in_run){ const m = await fetchBin(`api/cell_molecules?pos=${pos}&pad=80`);
+  if(d.in_run){ const m = await fetchBin(`api/cell_molecules?pos=${pos}&pad=80`, null, "loading cell…");
     FOCUS.tx = {n: m.hdr.n, pos: txPositions(m), gene:m.gene, act:m.act, same:m.same, old:m.old, nw:m.new}; }
   showInfo(d, FOCUS.tx); render(); pushHash();
 }
@@ -443,7 +457,7 @@ $("#gene").addEventListener("change", e => { if(GIDX[e.target.value.trim()] !== 
 async function loadExpr(name){
   const gi = GIDX[name]; if(gi === undefined){ toast(`gene "${name}" not in this panel`); return; }
   exprGene = gi; const raw = new Float32Array(NT), clean = new Float32Array(NT);
-  const [a, b] = await Promise.all([fetchBin(`api/expr?gene=${gi}&layer=raw`), fetchBin(`api/expr?gene=${gi}&layer=clean`)]);
+  const [a, b] = await Promise.all([fetchBin(`api/expr?gene=${gi}&layer=raw`, null, "loading expression…"), fetchBin(`api/expr?gene=${gi}&layer=clean`, null, "loading expression…")]);
   for(let k=0;k<a.hdr.fields[0][2];k++) raw[a.cell[k]] = a.val[k]; for(let k=0;k<b.hdr.fields[0][2];k++) clean[b.cell[k]] = b.val[k];
   const vals = Array.from(a.val).concat(Array.from(b.val)).sort((x,y)=>x-y); const vmax = vals.length ? vals[Math.floor(0.99*(vals.length-1))] : 1;
   EXPR = {raw, clean, gene: gi, vmax: Math.max(vmax, 1)}; drawLegend(); render();
@@ -483,5 +497,5 @@ document.addEventListener("keydown", e => { if(e.target.tagName === "INPUT" || e
   else if(k === "b" && e.shiftKey && VIEWCFG._writable){ const name = prompt("bookmark name"); if(name && name.trim()) saveView({bookmark: {name: name.trim(), view: currentView()}}); } });
 function seg(sel, v){ document.querySelectorAll(sel + " button").forEach(b => b.classList.toggle("on", b.dataset.v === v)); }
 window.onresize = () => scheduleAll();
-boot().catch(e => { $("#counts").innerHTML = "failed to load: " + e + "<pre id=\"errstack\" style=\"white-space:pre-wrap;max-width:600px;text-align:left\">" + (e.stack||"") + "</pre>"; console.error(e); });
+boot().catch(e => { pending = 0; busy(0); $("#counts").innerHTML = "failed to load: " + e + "<pre id=\"errstack\" style=\"white-space:pre-wrap;max-width:600px;text-align:left\">" + (e.stack||"") + "</pre>"; console.error(e); });
 </script>
