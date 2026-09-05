@@ -1,7 +1,7 @@
 <p align="center"><img src="docs/celldot-lockup.svg" width="380" alt="CellDot"></p>
 
 <p align="center"><b>Every molecule in the right cell.</b><br>
-Molecule-level decontamination for imaging-based spatial transcriptomics (Xenium, MERSCOPE, CosMx, whole-transcriptome panels).</p>
+Molecule-level decontamination for imaging-based spatial transcriptomics.</p>
 
 <p align="center"><a href="https://viewer.celldot.online">Live demo</a> · <a href="#install">Install</a> · <a href="#run-celldot-in-three-steps">Run</a> · <a href="#outputs">Outputs</a> · <a href="#the-viewer">Viewer</a></p>
 
