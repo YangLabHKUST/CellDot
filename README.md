@@ -126,7 +126,12 @@ Three files are all it needs: the two CellDot outputs and the platform's cell bo
 ```bash
 celldot-view --run <out dir> --boundaries <cell_boundaries.parquet>     # then open http://127.0.0.1:8765
 celldot-view --h5ad cleaned.h5ad --transcripts transcripts.parquet --boundaries cell_boundaries.parquet
+celldot-view --bundle <dir>/viewer_bundle                              # a bundle built earlier (or downloaded): no h5ad needed
 ```
+
+A public demo with three datasets runs at https://huggingface.co/spaces/CyhVVVV/CellDotViewer (the bundles are in
+https://huggingface.co/datasets/CyhVVVV/celldot-demo-data). To host several results yourself, `celldot.viewer.multi.create_multi_app`
+serves a landing page and one viewer per dataset from a single process; the Space's `app.py` is a 30-line example.
 
 An interactive, Xenium-Explorer-style map of the section built on deck.gl, with a small DuckDB server
 behind it. Only what is in the viewport is ever sent to the browser, so it works the same on a 300-gene

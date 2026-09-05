@@ -106,7 +106,7 @@
 </div>
 <div id="scale"><div class="bar" id="scalebar"></div><span id="scaletxt"></span></div>
 <div id="toast"></div>
-<script src="/web/vendor/deck.gl.min.js"></script>
+<script src="web/vendor/deck.gl.min.js"></script>
 <script>
 const {DeckGL, OrthographicView, PolygonLayer, SolidPolygonLayer, PathLayer, ScatterplotLayer, LineLayer} = deck;
 const $ = s => document.querySelector(s);
@@ -134,9 +134,9 @@ function toast(msg, ms=2500){ const t = $("#toast"); t.textContent = msg; t.styl
 
 // ---------- boot ----------
 async function boot(){
-  META = await (await fetch("/api/meta")).json();
-  GENES = (await (await fetch("/api/genes")).json()).names; GENES.forEach((g,i)=>GIDX[g]=i);
-  try { VIEWCFG = await (await fetch("/api/view")).json(); } catch(e){ VIEWCFG = {}; }      // optional celldot_view.json
+  META = await (await fetch("api/meta")).json();
+  GENES = (await (await fetch("api/genes")).json()).names; GENES.forEach((g,i)=>GIDX[g]=i);
+  try { VIEWCFG = await (await fetch("api/view")).json(); } catch(e){ VIEWCFG = {}; }      // optional celldot_view.json
   if(VIEWCFG.error) toast(VIEWCFG.error, 8000);
   if(VIEWCFG.type_colors) META.types.forEach((t,i)=>{ if(VIEWCFG.type_colors[t]) META.type_colors[i] = VIEWCFG.type_colors[t]; });
   TYPECOL = META.type_colors.map(hexRGB);
@@ -146,7 +146,7 @@ async function boot(){
   $("#genelist").innerHTML = GENES.slice(0, 20000).map(g=>`<option value="${g}">`).join("");
   $("#allw").textContent = ALL_GENES_W;
   $("#counts").title = "keys: F fit to tissue · Esc clear selection · A arrows · S same-type moves · P save PNG · shift+D set as default view · shift+B add bookmark";
-  C = await fetchBin("/api/cells"); NT = C.hdr.n; NRUN = C.hdr.n_run;
+  C = await fetchBin("api/cells"); NT = C.hdr.n; NRUN = C.hdr.n_run;
   C.pos2 = new Float32Array(NT*2); for(let i=0;i<NT;i++){ C.pos2[2*i]=C.cx[i]; C.pos2[2*i+1]=C.cy[i]; }
   drawLegend();
   const e = META.extent;
@@ -166,7 +166,7 @@ async function boot(){
   if(V0.cell) findAndSelect(V0.cell, !V0.view);
 }
 async function findAndSelect(cellId, fly){
-  const r = await fetch(`/api/find?cell_id=${encodeURIComponent(cellId)}`); if(!r.ok){ toast(`cell "${cellId}" not found`); return; }
+  const r = await fetch(`api/find?cell_id=${encodeURIComponent(cellId)}`); if(!r.ok){ toast(`cell "${cellId}" not found`); return; }
   const d = await r.json(); if(fly) flyTo(d.cx, d.cy, 5); setTimeout(()=>selectCell(d.pos), fly ? 750 : 50);
 }
 // ---------- views: URL hash, view file (celldot_view.json), bookmarks ----------
@@ -223,10 +223,10 @@ function renderBookmarks(){
   $("#viewfile").style.display = bl.length ? "" : "none";
 }
 async function saveView(body){
-  const r = await fetch("/api/view", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)});
+  const r = await fetch("api/view", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)});
   if(!r.ok){ toast("could not save the view: " + (await r.text()), 6000); return; }
   const d = await r.json(); toast(("default" in body ? "default view saved to " : "bookmark" in body ? "bookmark saved to " : "updated ") + d.file, 4000);
-  try { VIEWCFG = await (await fetch("/api/view")).json(); } catch(e){} renderBookmarks();
+  try { VIEWCFG = await (await fetch("api/view")).json(); } catch(e){} renderBookmarks();
 }
 
 function fitView(){
@@ -265,7 +265,7 @@ function scheduleAll(){ clearTimeout(timers.all); timers.all = setTimeout(()=>{ 
 async function fetchPolys(){
   const bb = bbox(); if(!bb) return;
   if(viewW > POLY_MAX_W){ if(POLYS){ POLYS = null; render(); } lastKey.polys = ""; return; }
-  const url = `/api/polys?xmin=${bb.xmin.toFixed(1)}&xmax=${bb.xmax.toFixed(1)}&ymin=${bb.ymin.toFixed(1)}&ymax=${bb.ymax.toFixed(1)}&limit=90000`;
+  const url = `api/polys?xmin=${bb.xmin.toFixed(1)}&xmax=${bb.xmax.toFixed(1)}&ymin=${bb.ymin.toFixed(1)}&ymax=${bb.ymax.toFixed(1)}&limit=90000`;
   if(url === lastKey.polys) return; lastKey.polys = url;
   let d; try { d = await fetchBin(url, "polys"); } catch(e){ return; }
   // deck.gl binary polygons (_normalize:false): every ring closed (first vertex repeated) and counter-clockwise
@@ -287,7 +287,7 @@ function txQuery(){
   const fates = [...document.querySelectorAll("#fatefilter input:checked")].map(c=>c.dataset.f).join(",");
   const all = $("#allgenes").checked && viewW <= ALL_GENES_W;
   if(!all && !selGenes.length) return {empty:true};
-  return {url: `/api/transcripts?xmin=${bb.xmin.toFixed(1)}&xmax=${bb.xmax.toFixed(1)}&ymin=${bb.ymin.toFixed(1)}&ymax=${bb.ymax.toFixed(1)}&genes=${selGenes.join(",")}&fates=${fates||"9"}&all=${all?1:0}&same=${hideSame?1:0}&limit=250000`, all};
+  return {url: `api/transcripts?xmin=${bb.xmin.toFixed(1)}&xmax=${bb.xmax.toFixed(1)}&ymin=${bb.ymin.toFixed(1)}&ymax=${bb.ymax.toFixed(1)}&genes=${selGenes.join(",")}&fates=${fates||"9"}&all=${all?1:0}&same=${hideSame?1:0}&limit=250000`, all};
 }
 async function fetchTx(){
   const qq = txQuery(); if(!qq) return;
@@ -394,10 +394,10 @@ function typeName(p){ const t = C.type[p]; return t >= 0 ? META.types[t] : "unla
 
 // ---------- selected cell ----------
 async function selectCell(pos){
-  const d = await (await fetch(`/api/cell?pos=${pos}`)).json();
+  const d = await (await fetch(`api/cell?pos=${pos}`)).json();
   let poly = null; if(POLYS){ for(let k=0;k<POLYS.n;k++) if(POLYS.pos[k]===pos){ const s=POLYS.start[k]*2, e=POLYS.start[k+1]*2; poly = []; for(let j=s;j<e;j+=2) poly.push([POLYS.xy[j], POLYS.xy[j+1]]); break; } }
   FOCUS = {pos, cell: d, poly, tx: null};
-  if(d.in_run){ const m = await fetchBin(`/api/cell_molecules?pos=${pos}&pad=80`); const n = m.hdr.n, p2 = new Float32Array(n*2); for(let k=0;k<n;k++){ p2[2*k]=m.x[k]; p2[2*k+1]=m.y[k]; }
+  if(d.in_run){ const m = await fetchBin(`api/cell_molecules?pos=${pos}&pad=80`); const n = m.hdr.n, p2 = new Float32Array(n*2); for(let k=0;k<n;k++){ p2[2*k]=m.x[k]; p2[2*k+1]=m.y[k]; }
     FOCUS.tx = {n, pos:p2, gene:m.gene, act:m.act, same:m.same, old:m.old, nw:m.new}; }
   showInfo(d, FOCUS.tx); render(); pushHash();
 }
@@ -432,7 +432,7 @@ $("#gene").addEventListener("change", e => { if(GIDX[e.target.value.trim()] !== 
 async function loadExpr(name){
   const gi = GIDX[name]; if(gi === undefined){ toast(`gene "${name}" not in this panel`); return; }
   exprGene = gi; const raw = new Float32Array(NT), clean = new Float32Array(NT);
-  const [a, b] = await Promise.all([fetchBin(`/api/expr?gene=${gi}&layer=raw`), fetchBin(`/api/expr?gene=${gi}&layer=clean`)]);
+  const [a, b] = await Promise.all([fetchBin(`api/expr?gene=${gi}&layer=raw`), fetchBin(`api/expr?gene=${gi}&layer=clean`)]);
   for(let k=0;k<a.hdr.fields[0][2];k++) raw[a.cell[k]] = a.val[k]; for(let k=0;k<b.hdr.fields[0][2];k++) clean[b.cell[k]] = b.val[k];
   const vals = Array.from(a.val).concat(Array.from(b.val)).sort((x,y)=>x-y); const vmax = vals.length ? vals[Math.floor(0.99*(vals.length-1))] : 1;
   EXPR = {raw, clean, gene: gi, vmax: Math.max(vmax, 1)}; drawLegend(); render();

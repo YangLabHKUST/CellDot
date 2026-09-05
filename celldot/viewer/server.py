@@ -45,9 +45,10 @@ def _ints(s, lo, hi):
     return out
 
 
-def create_app(bundle, threads=4, view_file=None, view_writable=False):
+def create_app(bundle, threads=4, view_file=None, view_writable=False, memory_limit=None):
     """view_file: optional JSON with the opening view / bookmarks / type colours (absent for ordinary runs -> built-in
-    defaults); view_writable lets the page save into it (celldot-view enables this only for a localhost server)."""
+    defaults); view_writable lets the page save into it (celldot-view enables this only for a localhost server);
+    memory_limit caps DuckDB's memory for this bundle (e.g. "3GB" when several bundles share one small server)."""
     import duckdb
     META = json.load(open(os.path.join(bundle, "meta.json"))); GENES = json.load(open(os.path.join(bundle, "genes.json")))
     if META.get("bundle_version", 1) != BUNDLE_VERSION:
@@ -55,6 +56,7 @@ def create_app(bundle, threads=4, view_file=None, view_writable=False):
     P = {k: os.path.join(bundle, v).replace("'", "''") for k, v in dict(cells="cells.parquet", mol="molecules_sorted.parquet",
                                                                      eg="expr_by_gene.parquet", ec="expr_by_cell.parquet").items()}
     con = duckdb.connect(); con.execute(f"PRAGMA threads={threads}"); LOCK = threading.Lock()
+    if memory_limit: con.execute(f"SET memory_limit='{memory_limit}'")
     def q(sql, params=None):
         with LOCK: return con.execute(sql, params or []).fetchnumpy()
     def q_arrow(sql):

@@ -2,6 +2,7 @@
 
     celldot-view --run <out_dir> --boundaries <cell_boundaries.parquet>           # out_dir has cleaned.h5ad + transcripts.parquet
     celldot-view --h5ad cleaned.h5ad --transcripts transcripts.parquet --boundaries cell_boundaries.parquet
+    celldot-view --bundle <dir>/viewer_bundle                                     # serve an existing bundle (no h5ad needed)
 """
 import argparse, json, os, sys, threading, webbrowser
 
@@ -23,11 +24,13 @@ def main():
     a = ap.parse_args()
     h5 = a.h5ad or (os.path.join(a.run, "cleaned.h5ad") if a.run else None)
     tx = a.transcripts or (os.path.join(a.run, "transcripts.parquet") if a.run else None)
-    if not h5: sys.exit("need --run <dir> or --h5ad/--transcripts")
+    if not h5 and not a.bundle: sys.exit("need --run <dir>, --h5ad/--transcripts, or --bundle <existing viewer bundle>")
     bundle = a.bundle or os.path.join(os.path.dirname(os.path.abspath(h5)), "viewer_bundle")
     from .prep import build_bundle, BUNDLE_VERSION
     mp = os.path.join(bundle, "meta.json")
     stale = os.path.exists(mp) and json.load(open(mp)).get("bundle_version", 1) != BUNDLE_VERSION
+    if (a.rebuild or stale or not os.path.exists(mp)) and not h5:
+        sys.exit(f"{bundle} is not a usable viewer bundle" + (" (built by another CellDot version)" if stale else "") + "; pass --h5ad/--transcripts/--boundaries to build one")
     if a.rebuild or stale or not os.path.exists(mp):
         if stale: print(f"viewer bundle {bundle} was built by an older CellDot version; rebuilding it", flush=True)
         b = a.boundaries or (os.path.join(a.outs, "cell_boundaries.parquet") if a.outs else None)
@@ -37,7 +40,7 @@ def main():
     if a.prep_only: return
     from .server import create_app
     import uvicorn
-    view_file = a.view or os.path.join(os.path.dirname(os.path.abspath(h5)), "celldot_view.json")
+    view_file = a.view or os.path.join(os.path.dirname(os.path.abspath(h5)) if h5 else os.path.dirname(os.path.abspath(bundle)), "celldot_view.json")
     writable = a.host in ("127.0.0.1", "localhost", "::1")
     app = create_app(bundle, threads=a.threads, view_file=view_file, view_writable=writable); m = app.state.meta
     if os.path.exists(view_file):
