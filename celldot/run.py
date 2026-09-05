@@ -209,12 +209,21 @@ def run(cfg):
 FATES = ["keep", "move", "drop", "background", "not_evaluated"]
 
 
+def n_rows_parquet(pf):
+    """Row count of a parquet file from its row groups (the footer's num_rows cannot be trusted in every export)."""
+    md = pf.metadata
+    return int(sum(md.row_group(i).num_rows for i in range(md.num_row_groups)))
+
+
 def write_transcripts(cfg, meta, cell_ids, rows, old_pos, new_pos, prov, log):
     """Copy the input transcripts.parquet row group by row group, appending celldot_cell_id (same dtype and vocabulary
     as cell_id; the platform's unassigned value for background) and celldot_fate. rows/old_pos/new_pos describe the
     processed molecules (row in the input file, host position, destination position or -1 = dropped). Completes
     ``prov`` (n_background, n_not_evaluated, run_id) before writing so both output files carry the same record."""
-    pf = pq.ParquetFile(cfg.TX); N_ALL = pf.metadata.num_rows
+    pf = pq.ParquetFile(cfg.TX)
+    # rows counted over the row groups: the footer's num_rows is WRONG in some platform exports (e.g. the 2022 Xenium
+    # breast-cancer file written by fastparquet 1.0.0 says 1,000,000 for a 42.6 M-row table)
+    N_ALL = n_rows_parquet(pf)
     fate = np.full(N_ALL, 4, np.int8); dest = np.full(N_ALL, -1, np.int32)               # 4 = not_evaluated
     fate[rows] = np.where(new_pos < 0, 2, np.where(new_pos == old_pos, 0, 1)).astype(np.int8); dest[rows] = new_pos.astype(np.int32)
     SENT = set(map(str, cfg.unassigned)); sent_ints = [int(x) for x in SENT if x.lstrip("-").isdigit()]

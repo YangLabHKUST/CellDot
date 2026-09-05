@@ -33,7 +33,7 @@ def estimate_ambient_profile(transcripts_path, genes, panel_mean, lam=0.1, qv_mi
     is pushed into the parquet scan so only the unassigned, is_gene, qv>=qv_min rows are read. Returns (a_g, info)."""
     import pyarrow.parquet as pq, pyarrow.dataset as pds, pyarrow.compute as pc
     name2idx = {g: i for i, g in enumerate(genes)}; G = len(genes)
-    n_total = pq.ParquetFile(transcripts_path).metadata.num_rows
+    _md = pq.ParquetFile(transcripts_path).metadata; n_total = sum(_md.row_group(i).num_rows for i in range(_md.num_row_groups))   # footer num_rows is wrong in some exports
     filt = (pc.field("cell_id") == unassigned) & pc.field("is_gene")
     if qv_min is not None: filt = filt & (pc.field("qv") >= float(qv_min))
     tbl = pds.dataset(transcripts_path, format="parquet").scanner(columns=["feature_name"], filter=filt).to_table()
