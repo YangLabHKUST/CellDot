@@ -282,7 +282,7 @@ function scheduleAll(){ clearTimeout(timers.all); timers.all = setTimeout(()=>{ 
 async function fetchPolys(){
   const bb = bbox(); if(!bb) return;
   if(viewW > POLY_MAX_W){ if(POLYS){ POLYS = null; render(); } lastKey.polys = ""; POLYS_BOX = null; return; }
-  const step = viewW > 1500 ? 3 : (viewW > 700 ? 2 : 1);                 // coarser rings when cells are a few pixels wide
+  const step = viewW > 2800 ? 3 : (viewW > 1200 ? 2 : 1);                // coarser rings when cells are a few pixels wide
   if(POLYS && POLYS_BOX && inside(bb, POLYS_BOX) && !POLYS.sampled && POLYS_BOX.step <= step) return;   // zooming in: already loaded
   const url = `api/polys?xmin=${bb.xmin.toFixed(1)}&xmax=${bb.xmax.toFixed(1)}&ymin=${bb.ymin.toFixed(1)}&ymax=${bb.ymax.toFixed(1)}&limit=90000&step=${step}`;
   if(url === lastKey.polys) return; lastKey.polys = url;
