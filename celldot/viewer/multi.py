@@ -23,13 +23,15 @@ PAGE = """<!doctype html><meta charset="utf-8"><meta name="viewport" content="wi
   :root {{ --bg:#0b0d12; --panel:#141821; --line:#262c38; --fg:#e8eaf0; --mut:#98a2b3; --acc:#8FC0CD; --keep:#8a8f98; --move:#2f8fe0; --drop:#e5484d; }}
   * {{ box-sizing:border-box; }}
   body {{ margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }}
-  main {{ max-width:1080px; margin:0 auto; padding:56px 24px 48px; }}
+  main {{ max-width:1360px; margin:0 auto; padding:56px 24px 48px; }}
   header {{ display:flex; align-items:center; gap:18px; margin-bottom:8px; }}
   header svg {{ width:56px; height:56px; flex:none; }}
   h1 {{ font-size:30px; margin:0; letter-spacing:-.01em; font-weight:650; }}
   h1 span {{ color:var(--acc); }}
   .lead {{ color:var(--mut); margin:0 0 30px 74px; font-size:15px; }}
-  .cards {{ display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:18px; }}
+  .cards {{ display:grid; grid-template-columns:repeat(4, 1fr); gap:18px; }}
+  @media (max-width:1180px) {{ .cards {{ grid-template-columns:repeat(2, 1fr); }} }}
+  @media (max-width:640px) {{ .cards {{ grid-template-columns:1fr; }} }}
   a.card {{ display:block; background:var(--panel); border:1px solid var(--line); border-radius:14px; overflow:hidden; color:inherit; text-decoration:none; transition:border-color .15s, transform .15s; }}
   a.card:hover {{ border-color:var(--acc); transform:translateY(-2px); }}
   a.card:focus-visible {{ outline:2px solid var(--acc); outline-offset:2px; }}
@@ -82,8 +84,8 @@ def create_multi_app(datasets, title="CellDot viewer", intro=None, threads=2, me
         app.add_api_route(f"/d/{key}", _redirect(f"/d/{key}/"), methods=["GET"], include_in_schema=False)
         app.mount(f"/d/{key}", sub)
     intro = intro or "The fate of every molecule (keep · move · drop) in a CellDot-corrected section. Pick a dataset."
-    card_html = "".join(
-        f'<a class="card" href="d/{c["key"]}/"><div class="thumb" style="background-image:url(thumb/{c["key"]}.jpg)"></div><div class="body">'
+    card_html = lambda: "".join(
+        f'<a class="card" href="d/{c["key"]}/"><div class="thumb" style="background-image:url({thumb_url(c["key"])})"></div><div class="body">'
         f'<h2>{html.escape(c["name"])}</h2><div class="blurb">{html.escape(c["blurb"])}</div>'
         f'<div class="nums"><b>{c["n_cells"]:,}</b> cells · <b>{c["n_tx"]:,}</b> molecules · <b>{c["n_genes"]:,}</b> genes</div>'
         f'<div class="fate"><span style="width:{c["keep"]:.1f}%;background:var(--keep)"></span><span style="width:{c["move"]:.1f}%;background:var(--move)"></span>'
@@ -92,12 +94,16 @@ def create_multi_app(datasets, title="CellDot viewer", intro=None, threads=2, me
         f'<span><span class="sw" style="background:var(--move)"></span>move {c["move"]:.1f}%</span><span><span class="sw" style="background:var(--drop)"></span>drop {c["drop"]:.1f}%</span></div>'
         f'</div></a>' for c in cards)
     link_html = "".join(f'<a href="{html.escape(u)}">{html.escape(l)}</a>' for l, u in links)
-    page = PAGE.format(title=html.escape(title), intro=html.escape(intro), cards=card_html, links=link_html, mark=MARK, favicon=FAVICON)
+    def page():
+        return PAGE.format(title=html.escape(title), intro=html.escape(intro), cards=card_html(), links=link_html, mark=MARK, favicon=FAVICON)
 
     @app.get("/", include_in_schema=False)
-    def index(): return HTMLResponse(page)
+    def index(): return HTMLResponse(page())
 
     THUMBS = {d["key"]: os.path.join(os.path.dirname(os.path.abspath(d["bundle"])), "thumb.jpg") for d in datasets}
+    def thumb_url(key):
+        p = THUMBS.get(key)
+        return f"thumb/{key}.jpg?v={int(os.path.getmtime(p))}" if p and os.path.exists(p) else ""
 
     @app.get("/thumb/{key}.jpg", include_in_schema=False)
     def thumb(key: str):
