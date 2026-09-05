@@ -24,4 +24,5 @@ venv/
 *.mtx
 *.png
 *.pdf
-!docs/*.png          # the README figures are part of the repository
+# the README figures are part of the repository
+!docs/*.png
