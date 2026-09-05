@@ -1,18 +1,15 @@
 <p align="center"><img src="docs/celldot-lockup.svg" width="380" alt="CellDot"></p>
 
-<p align="center"><b>Every molecule in the right cell.</b><br>
-Molecule-level decontamination for imaging-based spatial transcriptomics.</p>
+<p align="center">Molecule-level decontamination for imaging-based spatial transcriptomics.</p>
 
 <p align="center"><a href="https://viewer.celldot.online">Live demo</a> · <a href="#install">Install</a> · <a href="#run-celldot-in-three-steps">Run</a> · <a href="#outputs">Outputs</a> · <a href="#the-viewer">Viewer</a></p>
 
 ---
 
-Segmentation errors, spillover and 3-D overlap put many detected molecules in the wrong cell. CellDot looks at
-**every molecule** of a section and decides, with one optimal-transport problem over the whole tissue, whether it
-stays in its cell, belongs to a neighbouring cell, or is ambient background to be removed. The decision uses a
-single-cell reference of the tissue, the distance to nearby cells, how much of each gene a cell of that type can
-hold, and the background measured in the section itself. Nothing to train, nothing to tune: one setting was used
-for every dataset in the paper. You get a corrected cell × gene matrix **and** the fate of each molecule.
+Segmentation errors and spillover put many detected molecules in the wrong cell. CellDot decides, for every
+molecule of a section, whether it stays in its cell, moves to a neighbouring cell, or is removed as background,
+by solving one optimal-transport problem guided by a single-cell reference. No training, no tuning. The output is
+a corrected cell × gene matrix and the fate of each molecule.
 
 <p align="center"><img src="docs/figure1.png" width="880" alt="Overview of CellDot"></p>
 
@@ -55,11 +52,10 @@ celldot-view --run celldot/ --boundaries outs/cell_boundaries.parquet      # ope
 
 ## Inputs
 
-| | |
-|:--|:--|
-| `--input` | the platform's output folder: `transcripts.parquet`, `cells.parquet`, `cell_feature_matrix.h5` |
-| `--reference` | a single-cell reference of the same tissue (`.h5ad`, raw counts in `X` or `layers["counts"]`, cell type in `obs["celltype"]`; other names with `--ref-counts-layer` / `--ref-label-col`) |
-| `--labels` | the spatial cells' types: a parquet with `cell_id`, `celltype` (step 1), using the reference's cell-type names |
+- `--input`: the platform's output folder with `transcripts.parquet`, `cells.parquet` and `cell_feature_matrix.h5`.
+- `--reference`: a single-cell reference of the same tissue (`.h5ad`): raw counts in `X` or `layers["counts"]`, the cell type in
+  `obs["celltype"]`. Other names: `--ref-counts-layer`, `--ref-label-col`.
+- `--labels`: the spatial cells' types, a parquet with `cell_id` and `celltype` (step 1) using the reference's cell-type names.
 
 ## Outputs
 
