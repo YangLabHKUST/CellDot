@@ -97,9 +97,7 @@ celldot-view --run celldot/ --boundaries outs/cell_boundaries.parquet
 
 The command builds a query index next to the result the first time (about a minute per hundred million
 molecules), starts a local server and opens http://127.0.0.1:8765 in your browser; later launches are instant.
-Type a gene to see its molecules, zoom in below 0.8 mm to see all genes, click a cell for its molecules, press `S`
-to hide moves between cells of the same type, `P` to save a PNG. To make the viewer open on a chosen scene next
-time, navigate there and press `shift+D`. On a remote machine add `--no-browser` and forward the port with ssh.
+On a remote machine add `--no-browser` and forward the port with ssh.
 
 ## Python
 
