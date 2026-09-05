@@ -1,11 +1,15 @@
 """CellDot viewer backend: FastAPI + DuckDB over a bundle written by prep.build_bundle.
 
 Binary responses (application/octet-stream): [uint32 header length][JSON header][typed arrays...], header =
-{"fields": [[name, dtype, count], ...], ...}; dtypes f32/i32/i16/u8. Only viewport-sized slices ever leave the server.
+{"fields": [[name, dtype, count], ...], ...}; dtypes f32/i32/i16/u16/u8. Only viewport-sized slices ever leave the server,
+gzip-compressed, with coordinates as 16-bit integers: polygon vertices are 0.1 um offsets from the cell centroid (dxy),
+molecule positions are x0 + u * sx / y0 + v * sy (x0, y0, sx, sy in the header). Responses are immutable per bundle and
+carry Cache-Control so browsers and CDNs can keep them.
     GET /api/meta, /api/genes                      bundle metadata, gene names (index = gene code)
     GET /api/cells                                 all cells' attributes (pos order): cx, cy, type, n_in, n_out, n_drop, n_raw, n_clean,
                                                    n_in_same, n_out_same (moves between cells of the same type), in_run
-    GET /api/polys?xmin&xmax&ymin&ymax&limit       cell polygons intersecting the box: pos, nv, xy (flat)
+    GET /api/polys?xmin&xmax&ymin&ymax&limit&step  cell polygons intersecting the box: pos, nv, dxy (i16, 0.1 um from the
+                                                   centroid); step=2,3 keeps every 2nd/3rd vertex for wide views
     GET /api/transcripts?xmin&xmax&ymin&ymax&genes=1,2&fates=0,1,2&all=0&same=0&limit
                                                    molecules in the box (gene + fate pushdown; reservoir-sampled to limit); each
                                                    molecule carries same=1 when it moved between two cells of one cell type, and
@@ -20,21 +24,34 @@ Binary responses (application/octet-stream): [uint32 header length][JSON header]
     POST /api/view                                 write {"default": view} / {"bookmark": {...}} / {"remove_bookmark": name} into
                                                    that file (only when the server is bound to localhost)
 """
-import os, json, struct, threading, numpy as np
+import os, json, struct, threading, gzip, numpy as np
 from fastapi import FastAPI, Response, HTTPException, Request
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.gzip import GZipMiddleware
 from .prep import BUNDLE_VERSION
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DT = {"float32": "f32", "int32": "i32", "int16": "i16", "uint8": "u8", "int8": "i8", "uint32": "u32"}
+DT = {"float32": "f32", "int32": "i32", "int16": "i16", "uint16": "u16", "uint8": "u8", "int8": "i8", "uint32": "u32"}
+CACHE = {"Cache-Control": "public, max-age=86400"}          # bundle data never changes; let browsers / CDNs keep it
+
+
+def pack_bytes(fields, **extra):
+    hdr = {"fields": [[n, DT[str(a.dtype)], int(a.size)] for n, a in fields]}; hdr.update(extra)
+    h = json.dumps(hdr).encode()
+    return b"".join([struct.pack("<I", len(h)), h] + [np.ascontiguousarray(a).tobytes() for _, a in fields])
 
 
 def pack(fields, **extra):
-    hdr = {"fields": [[n, DT[str(a.dtype)], int(a.size)] for n, a in fields]}; hdr.update(extra)
-    h = json.dumps(hdr).encode()
-    return Response(content=b"".join([struct.pack("<I", len(h)), h] + [np.ascontiguousarray(a).tobytes() for _, a in fields]),
-                    media_type="application/octet-stream")
+    # a fresh Response per request: the gzip middleware rewrites response headers in place, so a cached Response object
+    # would be sent uncompressed with a stale Content-Length the second time
+    return Response(content=pack_bytes(fields, **extra), media_type="application/octet-stream", headers=CACHE)
+
+
+def _q16(v, lo, hi):
+    """float coordinates -> uint16 on [lo, hi]; returns (codes, origin, scale) with value = origin + code * scale."""
+    v = np.asarray(v, np.float64); scale = max((hi - lo) / 65535.0, 1e-6)
+    return np.clip(np.rint((v - lo) / scale), 0, 65535).astype(np.uint16), float(lo), float(scale)
 
 
 def _ints(s, lo, hi):
@@ -55,47 +72,64 @@ def create_app(bundle, threads=4, view_file=None, view_writable=False, memory_li
         raise RuntimeError(f"viewer bundle {bundle} was built by another CellDot version; rebuild it (celldot-view --rebuild)")
     P = {k: os.path.join(bundle, v).replace("'", "''") for k, v in dict(cells="cells.parquet", mol="molecules_sorted.parquet",
                                                                      eg="expr_by_gene.parquet", ec="expr_by_cell.parquet").items()}
-    con = duckdb.connect(); con.execute(f"PRAGMA threads={threads}"); LOCK = threading.Lock()
+    con = duckdb.connect(); con.execute(f"PRAGMA threads={threads}")
     if memory_limit: con.execute(f"SET memory_limit='{memory_limit}'")
-    def q(sql, params=None):
-        with LOCK: return con.execute(sql, params or []).fetchnumpy()
-    def q_arrow(sql):
-        with LOCK: return con.execute(sql).fetch_arrow_table()
-    def one(sql, params=None):
-        with LOCK: return con.execute(sql, params or []).fetchone()
+    TL = threading.local()
+    def cur():                                             # one DuckDB cursor per worker thread (cursors run concurrently)
+        c = getattr(TL, "cur", None)
+        if c is None: c = TL.cur = con.cursor()
+        return c
+    def q(sql, params=None): return cur().execute(sql, params or []).fetchnumpy()
+    def q_arrow(sql): return cur().execute(sql).fetch_arrow_table()
+    def one(sql, params=None): return cur().execute(sql, params or []).fetchone()
 
     # all-cell attribute arrays, pos order (small: ~30 bytes/cell)
     A = q(f"SELECT pos, cx, cy, type, n_in, n_out, n_drop, n_raw, n_clean, n_in_same, n_out_same, in_run FROM read_parquet('{P['cells']}') ORDER BY pos")
     NT = int(A["pos"].size); assert (A["pos"] == np.arange(NT)).all()
     CX = np.asarray(A["cx"], np.float32); CY = np.asarray(A["cy"], np.float32)
-    CELLS_BLOB = pack([("cx", CX), ("cy", CY), ("type", np.asarray(A["type"], np.int16)),
+    CELLS_BODY = pack_bytes([("cx", CX), ("cy", CY), ("type", np.asarray(A["type"], np.int16)),
                        ("n_in", np.asarray(A["n_in"], np.int32)), ("n_out", np.asarray(A["n_out"], np.int32)), ("n_drop", np.asarray(A["n_drop"], np.int32)),
                        ("n_raw", np.asarray(A["n_raw"], np.int32)), ("n_clean", np.asarray(A["n_clean"], np.int32)),
                        ("n_in_same", np.asarray(A["n_in_same"], np.int32)), ("n_out_same", np.asarray(A["n_out_same"], np.int32)),
                        ("in_run", np.asarray(A["in_run"], np.uint8))], n=NT, n_run=META["n_cells"])
+    CELLS_GZ = gzip.compress(CELLS_BODY, compresslevel=6)
     app = FastAPI(title=f"CellDot viewer: {META['dataset']}")
+    app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=5)
 
     @app.get("/api/meta")
-    def meta(): return JSONResponse(META)
+    def meta(): return JSONResponse(META, headers=CACHE)
 
     @app.get("/api/genes")
-    def genes(): return JSONResponse(GENES)
+    def genes(): return JSONResponse(GENES, headers=CACHE)
 
     @app.get("/api/cells")
-    def cells(): return CELLS_BLOB
+    def cells(request: Request):                      # compressed once at start-up (several MB; level-9 gzip per request took seconds)
+        if "gzip" in request.headers.get("accept-encoding", ""):
+            return Response(content=CELLS_GZ, media_type="application/octet-stream", headers={**CACHE, "Content-Encoding": "gzip", "Vary": "Accept-Encoding"})
+        return Response(content=CELLS_BODY, media_type="application/octet-stream", headers=CACHE)
 
     @app.get("/api/polys")
-    def polys(xmin: float, xmax: float, ymin: float, ymax: float, limit: int = 80000):
+    def polys(xmin: float, xmax: float, ymin: float, ymax: float, limit: int = 80000, step: int = 1):
         base = (f"FROM read_parquet('{P['cells']}') WHERE nv > 0 AND xmax >= {xmin} AND xmin <= {xmax} AND ymax >= {ymin} AND ymin <= {ymax}")
         n = int(one(f"SELECT count(*) {base}")[0]); sampled = n > limit
         sql = f"SELECT pos, vx, vy {base}" + (f" USING SAMPLE {int(limit)} ROWS (reservoir, 42)" if sampled else "")
         t = q_arrow(sql)
         if t.num_rows == 0:
-            return pack([("pos", np.zeros(0, np.int32)), ("nv", np.zeros(0, np.int32)), ("xy", np.zeros(0, np.float32))], n=0, sampled=False)
+            return pack([("pos", np.zeros(0, np.int32)), ("nv", np.zeros(0, np.uint16)), ("dxy", np.zeros(0, np.int16))], n=0, sampled=False, scale=0.1)
+        pos = t.column("pos").to_numpy().astype(np.int32)
         vx = t.column("vx").combine_chunks(); vy = t.column("vy").combine_chunks()
-        offs = vx.offsets.to_numpy(); fx = vx.values.to_numpy().astype(np.float32); fy = vy.values.to_numpy().astype(np.float32)
-        xy = np.empty(2 * fx.size, np.float32); xy[0::2] = fx; xy[1::2] = fy
-        return pack([("pos", t.column("pos").to_numpy().astype(np.int32)), ("nv", np.diff(offs).astype(np.int32)), ("xy", xy)], n=int(t.num_rows), sampled=sampled)
+        offs = vx.offsets.to_numpy(); fx = vx.values.to_numpy().astype(np.float64); fy = vy.values.to_numpy().astype(np.float64)
+        nv = np.diff(offs)
+        if step > 1 and fx.size:                            # wide views: every step-th vertex (at least 4 per ring)
+            ring = np.repeat(np.arange(len(nv)), nv); j = np.arange(fx.size) - np.repeat(offs[:-1], nv)
+            st = np.where(nv >= 4 * step, step, np.maximum(1, nv // 4))
+            keep = (j % st[ring]) == 0
+            fx = fx[keep]; fy = fy[keep]; nv = np.bincount(ring[keep], minlength=len(nv))
+        # 0.1 um offsets from the cell centroid (the client already has the centroids from /api/cells)
+        cidx = np.repeat(np.arange(len(pos)), nv)
+        dx = np.rint((fx - CX[pos][cidx]) * 10.0); dy = np.rint((fy - CY[pos][cidx]) * 10.0)
+        dxy = np.empty(2 * fx.size, np.int16); dxy[0::2] = np.clip(dx, -32767, 32767); dxy[1::2] = np.clip(dy, -32767, 32767)
+        return pack([("pos", pos), ("nv", nv.astype(np.uint16)), ("dxy", dxy)], n=int(t.num_rows), sampled=sampled, scale=0.1)
 
     def _tx_where(xmin, xmax, ymin, ymax, genes, fates, all_genes, hide_same=False):
         gl = _ints(genes, 0, GENES["n"] - 1); fl = _ints(fates, 0, 2)
@@ -107,26 +141,27 @@ def create_app(bundle, threads=4, view_file=None, view_writable=False, memory_li
         if not fl: w += " AND act = 9"
         return w
 
-    EMPTY = lambda: pack([("x", np.zeros(0, np.float32)), ("y", np.zeros(0, np.float32)), ("gene", np.zeros(0, np.int32)),
+    EMPTY = lambda: pack([("u", np.zeros(0, np.uint16)), ("v", np.zeros(0, np.uint16)), ("gene", np.zeros(0, np.uint16)),
                           ("act", np.zeros(0, np.uint8)), ("old", np.zeros(0, np.int32)), ("new", np.zeros(0, np.int32)),
-                          ("same", np.zeros(0, np.uint8))], n=0, sampled=False, total=0)
+                          ("same", np.zeros(0, np.uint8))], n=0, sampled=False, total=0, x0=0.0, y0=0.0, sx=1.0, sy=1.0)
 
-    def _tx(where, limit):
+    def _tx(where, limit, box):
         base = f"FROM read_parquet('{P['mol']}') WHERE {where}"
         n = int(one(f"SELECT count(*) {base}")[0]); sampled = n > limit
         sql = f"SELECT x, y, gene, act, old, new, same {base}"
         if sampled: sql = f"SELECT * FROM ({sql}) USING SAMPLE {int(limit)} ROWS (reservoir, 42)"
-        d = q(sql)
-        return pack([("x", np.asarray(d["x"], np.float32)), ("y", np.asarray(d["y"], np.float32)), ("gene", np.asarray(d["gene"], np.int32)),
+        d = q(sql); xmin, xmax, ymin, ymax = box
+        u, x0, sx = _q16(d["x"], xmin, xmax); v, y0, sy = _q16(d["y"], ymin, ymax)
+        return pack([("u", u), ("v", v), ("gene", np.asarray(d["gene"], np.uint16)),
                      ("act", np.asarray(d["act"], np.uint8)), ("old", np.asarray(d["old"], np.int32)), ("new", np.asarray(d["new"], np.int32)),
                      ("same", np.asarray(d["same"], np.uint8))],
-                    n=int(d["x"].size), sampled=sampled, total=n)
+                    n=int(u.size), sampled=sampled, total=n, x0=x0, y0=y0, sx=sx, sy=sy)
 
     @app.get("/api/transcripts")
     def transcripts(xmin: float, xmax: float, ymin: float, ymax: float, genes: str = "", fates: str = "0,1,2", all: int = 0, same: int = 0,
                     limit: int = 250000):
         w = _tx_where(xmin, xmax, ymin, ymax, genes, fates, bool(all), bool(same))
-        return EMPTY() if w is None else _tx(w, limit)
+        return EMPTY() if w is None else _tx(w, limit, (xmin, xmax, ymin, ymax))
 
     @app.get("/api/expr")
     def expr(gene: int, layer: str = "clean"):
@@ -141,7 +176,7 @@ def create_app(bundle, threads=4, view_file=None, view_writable=False, memory_li
         r = one(f"SELECT cell_id, type, cx, cy, n_in, n_out, n_drop, n_raw, n_clean, in_run, nv, n_in_same, n_out_same "
                 f"FROM read_parquet('{P['cells']}') WHERE pos = {int(pos)}")
         g = q(f"SELECT gene, raw, clean FROM read_parquet('{P['ec']}') WHERE cell = {int(pos)} ORDER BY clean DESC, raw DESC") if r[9] else {"gene": [], "raw": [], "clean": []}
-        return JSONResponse({"pos": pos, "cell_id": r[0], "type": META["types"][r[1]] if r[1] >= 0 else None, "cx": float(r[2]), "cy": float(r[3]),
+        return JSONResponse(headers=CACHE, content={"pos": pos, "cell_id": r[0], "type": META["types"][r[1]] if r[1] >= 0 else None, "cx": float(r[2]), "cy": float(r[3]),
                              "n_in": int(r[4]), "n_out": int(r[5]), "n_drop": int(r[6]), "n_raw": int(r[7]), "n_clean": int(r[8]), "in_run": bool(r[9]),
                              "has_polygon": int(r[10]) > 0, "n_in_same": int(r[11]), "n_out_same": int(r[12]),
                              "genes": [[GENES["names"][int(a)], int(b), int(c)] for a, b, c in zip(g["gene"], g["raw"], g["clean"])]})
@@ -150,7 +185,8 @@ def create_app(bundle, threads=4, view_file=None, view_writable=False, memory_li
     def cell_molecules(pos: int, pad: float = 80.0):
         if not 0 <= pos < NT: raise HTTPException(404, "no such cell")
         cx, cy = float(CX[pos]), float(CY[pos])
-        return _tx(f"x BETWEEN {cx - pad} AND {cx + pad} AND y BETWEEN {cy - pad} AND {cy + pad} AND (old = {int(pos)} OR new = {int(pos)})", 500000)
+        return _tx(f"x BETWEEN {cx - pad} AND {cx + pad} AND y BETWEEN {cy - pad} AND {cy + pad} AND (old = {int(pos)} OR new = {int(pos)})", 500000,
+                   (cx - pad, cx + pad, cy - pad, cy + pad))
 
     @app.get("/api/find")
     def find(cell_id: str):

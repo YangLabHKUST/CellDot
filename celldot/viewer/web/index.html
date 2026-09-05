@@ -121,7 +121,10 @@ const hexRGB = h => [parseInt(h.slice(1,3),16), parseInt(h.slice(3,5),16), parse
 const fmt = n => n.toLocaleString();
 
 // ---------- binary transport ----------
-const TYPES = {f32:[Float32Array,4], i32:[Int32Array,4], i16:[Int16Array,2], u8:[Uint8Array,1], i8:[Int8Array,1], u32:[Uint32Array,4]};
+const TYPES = {f32:[Float32Array,4], i32:[Int32Array,4], i16:[Int16Array,2], u16:[Uint16Array,2], u8:[Uint8Array,1], i8:[Int8Array,1], u32:[Uint32Array,4]};
+// molecule responses carry 16-bit coordinates: x = x0 + u*sx, y = y0 + v*sy
+function txPositions(d){ const n = d.hdr.n, pos = new Float32Array(n*2), {x0, y0, sx, sy} = d.hdr; for(let k=0;k<n;k++){ pos[2*k] = x0 + d.u[k]*sx; pos[2*k+1] = y0 + d.v[k]*sy; } return pos; }
+const inside = (a, b) => a && b && a.xmin >= b.xmin && a.xmax <= b.xmax && a.ymin >= b.ymin && a.ymax <= b.ymax;   // box a within box b
 async function fetchBin(url, key){
   if(key){ if(ctrl[key]) ctrl[key].abort(); ctrl[key] = new AbortController(); }
   const r = await fetch(url, key ? {signal: ctrl[key].signal} : {}); const buf = await r.arrayBuffer();
@@ -204,7 +207,7 @@ function applySettings(v){
 function applyView(v, animate){                         // a bookmark, or the default view again
   if(v.view) deckgl.setProps({initialViewState: {...v.view, transitionDuration: animate ? 700 : 0}});
   applySettings(v); if(v.genes){ selGenes = v.genes.slice(); renderChips(); }
-  lastKey = {}; drawLegend(); render(); status(); scheduleAll(); pushHash();
+  lastKey = {}; TX_BOX = null; POLYS_BOX = null; drawLegend(); render(); status(); scheduleAll(); pushHash();
   if(v.cell) findAndSelect(v.cell, !v.view); else if(v.cell === null && FOCUS) clearSel();
 }
 function currentView(){                                 // what "set as default view" / "add bookmark" store
@@ -264,12 +267,17 @@ function scheduleAll(){ clearTimeout(timers.all); timers.all = setTimeout(()=>{ 
 // ---------- cells: polygons in view (LOD) ----------
 async function fetchPolys(){
   const bb = bbox(); if(!bb) return;
-  if(viewW > POLY_MAX_W){ if(POLYS){ POLYS = null; render(); } lastKey.polys = ""; return; }
-  const url = `api/polys?xmin=${bb.xmin.toFixed(1)}&xmax=${bb.xmax.toFixed(1)}&ymin=${bb.ymin.toFixed(1)}&ymax=${bb.ymax.toFixed(1)}&limit=90000`;
+  if(viewW > POLY_MAX_W){ if(POLYS){ POLYS = null; render(); } lastKey.polys = ""; POLYS_BOX = null; return; }
+  const step = viewW > 1500 ? 3 : (viewW > 700 ? 2 : 1);                 // coarser rings when cells are a few pixels wide
+  if(POLYS && POLYS_BOX && inside(bb, POLYS_BOX) && !POLYS.sampled && POLYS_BOX.step <= step) return;   // zooming in: already loaded
+  const url = `api/polys?xmin=${bb.xmin.toFixed(1)}&xmax=${bb.xmax.toFixed(1)}&ymin=${bb.ymin.toFixed(1)}&ymax=${bb.ymax.toFixed(1)}&limit=90000&step=${step}`;
   if(url === lastKey.polys) return; lastKey.polys = url;
   let d; try { d = await fetchBin(url, "polys"); } catch(e){ return; }
+  // vertices arrive as 0.1 um offsets from each cell's centroid
+  const xy = new Float32Array(d.dxy.length); { const sc = d.hdr.scale || 0.1; let v = 0; for(let k=0;k<d.hdr.n;k++){ const p = d.pos[k], m = d.nv[k];
+    for(let j=0;j<m;j++){ xy[v] = C.cx[p] + d.dxy[v]*sc; xy[v+1] = C.cy[p] + d.dxy[v+1]*sc; v += 2; } } }
   // deck.gl binary polygons (_normalize:false): every ring closed (first vertex repeated) and counter-clockwise
-  const n = d.hdr.n, nv = d.nv, xy = d.xy, out = new Float32Array(xy.length + 2*n), start = new Uint32Array(n+1); let src = 0, dst = 0;
+  const n = d.hdr.n, nv = d.nv, out = new Float32Array(xy.length + 2*n), start = new Uint32Array(n+1); let src = 0, dst = 0;
   for(let k=0;k<n;k++){ const m = nv[k]; let area = 0;
     for(let j=0;j<m;j++){ const x0=xy[src+2*j], y0=xy[src+2*j+1], x1=xy[src+2*((j+1)%m)], y1=xy[src+2*((j+1)%m)+1]; area += x0*y1 - x1*y0; }
     start[k] = dst/2;
@@ -277,9 +285,10 @@ async function fetchPolys(){
     else { for(let j=m-1;j>=0;j--){ out[dst++] = xy[src+2*j]; out[dst++] = xy[src+2*j+1]; } }
     out[dst++] = out[start[k]*2]; out[dst++] = out[start[k]*2+1]; src += 2*m; }
   start[n] = dst/2;
-  POLYS = {n, pos: d.pos, xy: out.subarray(0, dst), start, sampled: d.hdr.sampled};
+  POLYS = {n, pos: d.pos, xy: out.subarray(0, dst), start, sampled: d.hdr.sampled}; POLYS_BOX = {...bb, step};
   render(); status();
 }
+let POLYS_BOX = null, TX_BOX = null;
 
 // ---------- molecules in view ----------
 function txQuery(){
@@ -287,15 +296,17 @@ function txQuery(){
   const fates = [...document.querySelectorAll("#fatefilter input:checked")].map(c=>c.dataset.f).join(",");
   const all = $("#allgenes").checked && viewW <= ALL_GENES_W;
   if(!all && !selGenes.length) return {empty:true};
-  return {url: `api/transcripts?xmin=${bb.xmin.toFixed(1)}&xmax=${bb.xmax.toFixed(1)}&ymin=${bb.ymin.toFixed(1)}&ymax=${bb.ymax.toFixed(1)}&genes=${selGenes.join(",")}&fates=${fates||"9"}&all=${all?1:0}&same=${hideSame?1:0}&limit=250000`, all};
+  const sel = `genes=${selGenes.join(",")}&fates=${fates||"9"}&all=${all?1:0}&same=${hideSame?1:0}`;
+  return {url: `api/transcripts?xmin=${bb.xmin.toFixed(1)}&xmax=${bb.xmax.toFixed(1)}&ymin=${bb.ymin.toFixed(1)}&ymax=${bb.ymax.toFixed(1)}&${sel}&limit=250000`, all, sel, bb};
 }
 async function fetchTx(){
   const qq = txQuery(); if(!qq) return;
-  if(qq.empty){ TX = null; lastKey.tx = ""; render(); status(); return; }
+  if(qq.empty){ TX = null; TX_BOX = null; lastKey.tx = ""; render(); status(); return; }
+  if(TX && TX_BOX && TX_BOX.sel === qq.sel && inside(qq.bb, TX_BOX) && !TX.sampled) return;        // zooming in: already loaded
   if(qq.url === lastKey.tx) return; lastKey.tx = qq.url;
   let d; try { d = await fetchBin(qq.url, "tx"); } catch(e){ return; }
-  const n = d.hdr.n, pos = new Float32Array(n*2); for(let k=0;k<n;k++){ pos[2*k]=d.x[k]; pos[2*k+1]=d.y[k]; }
-  TX = {n, pos, gene: d.gene, act: d.act, same: d.same, old: d.old, nw: d.new, sampled: d.hdr.sampled, total: d.hdr.total, all: qq.all};
+  TX = {n: d.hdr.n, pos: txPositions(d), gene: d.gene, act: d.act, same: d.same, old: d.old, nw: d.new, sampled: d.hdr.sampled, total: d.hdr.total, all: qq.all};
+  TX_BOX = {...qq.bb, sel: qq.sel};
   render(); status();
 }
 async function status(){                                   // one quiet line under the molecule controls, only when it helps
@@ -397,8 +408,8 @@ async function selectCell(pos){
   const d = await (await fetch(`api/cell?pos=${pos}`)).json();
   let poly = null; if(POLYS){ for(let k=0;k<POLYS.n;k++) if(POLYS.pos[k]===pos){ const s=POLYS.start[k]*2, e=POLYS.start[k+1]*2; poly = []; for(let j=s;j<e;j+=2) poly.push([POLYS.xy[j], POLYS.xy[j+1]]); break; } }
   FOCUS = {pos, cell: d, poly, tx: null};
-  if(d.in_run){ const m = await fetchBin(`api/cell_molecules?pos=${pos}&pad=80`); const n = m.hdr.n, p2 = new Float32Array(n*2); for(let k=0;k<n;k++){ p2[2*k]=m.x[k]; p2[2*k+1]=m.y[k]; }
-    FOCUS.tx = {n, pos:p2, gene:m.gene, act:m.act, same:m.same, old:m.old, nw:m.new}; }
+  if(d.in_run){ const m = await fetchBin(`api/cell_molecules?pos=${pos}&pad=80`);
+    FOCUS.tx = {n: m.hdr.n, pos: txPositions(m), gene:m.gene, act:m.act, same:m.same, old:m.old, nw:m.new}; }
   showInfo(d, FOCUS.tx); render(); pushHash();
 }
 function showInfo(d, m){
@@ -421,10 +432,10 @@ window.clearSel = clearSel; window.flyTo = flyTo;
 
 // ---------- genes ----------
 function addGene(name){ const i = GIDX[name]; if(i === undefined){ toast(`gene "${name}" not in this panel`); return; } if(selGenes.includes(i)) return; if(selGenes.length >= 60){ toast("at most 60 genes at once"); return; }
-  selGenes.push(i); renderChips(); lastKey.tx = ""; fetchTx(); }
+  selGenes.push(i); renderChips(); lastKey.tx = ""; TX_BOX = null; fetchTx(); }
 function renderChips(){ $("#ngsel").textContent = selGenes.length; pushHash();
   $("#chips").innerHTML = selGenes.map(i=>`<span class="chip" data-i="${i}"><span class="sw" style="background:rgb(${geneColor(i)});width:8px;height:8px;margin-right:4px"></span>${GENES[i]} ✕</span>`).join("");
-  $("#chips").querySelectorAll(".chip").forEach(el => el.onclick = () => { selGenes = selGenes.filter(x => x != +el.dataset.i); renderChips(); lastKey.tx = ""; fetchTx(); }); }
+  $("#chips").querySelectorAll(".chip").forEach(el => el.onclick = () => { selGenes = selGenes.filter(x => x != +el.dataset.i); renderChips(); lastKey.tx = ""; TX_BOX = null; fetchTx(); }); }
 $("#gene").addEventListener("keydown", e => { if(e.key === "Enter"){ addGene(e.target.value.trim()); e.target.value = ""; } });
 $("#gene").addEventListener("change", e => { if(GIDX[e.target.value.trim()] !== undefined){ addGene(e.target.value.trim()); e.target.value = ""; } });
 
@@ -451,11 +462,11 @@ function drawLegend(){
 
 // ---------- controls ----------
 $("#txmode").onclick = e => { if(e.target.dataset.v){ txMode = e.target.dataset.v; seg("#txmode", txMode); render(); } };
-$("#fatefilter").onchange = () => { lastKey.tx = ""; fetchTx(); };
-$("#allgenes").onchange = () => { lastKey.tx = ""; fetchTx(); };
+$("#fatefilter").onchange = () => { lastKey.tx = ""; TX_BOX = null; fetchTx(); };
+$("#allgenes").onchange = () => { lastKey.tx = ""; TX_BOX = null; fetchTx(); };
 $("#arrows").onchange = render; $("#psize").oninput = render; $("#outlines").onchange = render; $("#fillop").oninput = render;
 function applySame(){ hideSame = $("#hidesame").checked; $("#movenote").style.display = hideSame ? "" : "none";
-  lastKey.tx = ""; fetchTx(); drawLegend(); render(); status(); if(FOCUS) showInfo(FOCUS.cell, FOCUS.tx); pushHash(); }
+  lastKey.tx = ""; TX_BOX = null; fetchTx(); drawLegend(); render(); status(); if(FOCUS) showInfo(FOCUS.cell, FOCUS.tx); pushHash(); }
 $("#hidesame").onchange = applySame;
 $("#cellmode").onchange = e => { cellMode = e.target.value; $("#exprrow").style.display = ["raw","clean","delta"].includes(cellMode) ? "flex" : "none";
   if(["raw","clean","delta"].includes(cellMode) && exprGene === null && selGenes.length){ $("#exprgene").value = GENES[selGenes[0]]; loadExpr(GENES[selGenes[0]]); } else { drawLegend(); render(); } };
