@@ -13,11 +13,20 @@ import argparse, os, warnings
 import numpy as np, pandas as pd
 
 
-def _as_counts(a, counts_layer=None):
+def _as_counts(a, counts_layer=None, what="reference"):
+    """A copy whose X holds the RAW COUNTS: ``counts_layer`` if given, else layers['counts'] when present, else X.
+    Normalised data (negative values, or mostly non-integer entries) is refused: the model is trained on counts."""
     a = a.copy()
-    if counts_layer and counts_layer in a.layers: a.X = a.layers[counts_layer].copy()
-    X = a.X; frac = (X.data % 1 != 0).mean() if hasattr(X, "data") else float(np.mean(X % 1 != 0))
-    if frac > 1e-6: warnings.warn(f"{a.shape}: .X does not look like integer counts (non-integer fraction {frac:.3f})")
+    if counts_layer:
+        if counts_layer not in a.layers: raise ValueError(f"{what} has no layer {counts_layer!r} (layers: {list(a.layers.keys())})")
+        a.X = a.layers[counts_layer].copy(); src = f"layers[{counts_layer!r}]"
+    elif "counts" in a.layers: a.X = a.layers["counts"].copy(); src = "layers['counts']"
+    else: src = "X"
+    X = a.X; v = X.data if hasattr(X, "data") else np.asarray(X).ravel()
+    if v.size and float(v.min()) < 0: raise ValueError(f"{what} {src} has negative values (scaled data): the raw counts are needed (--ref-counts-layer)")
+    frac = float(np.mean(v % 1 != 0)) if v.size else 0.0
+    if frac > 0.5: raise ValueError(f"{what} {src} does not look like raw counts ({frac:.0%} non-integer entries, max {float(v.max()):.2f}): probably normalised; the raw counts are needed (--ref-counts-layer)")
+    if frac > 0: warnings.warn(f"{what} {src}: {frac:.2%} of the entries are not integers (used as they are)")
     return a
 
 
@@ -30,7 +39,7 @@ def annotate_scanvi_joint(query, reference, label_key="celltype", ref_batch_key=
     except Exception: pass
     scvi.settings.seed = seed; acc = "gpu" if (gpu and torch.cuda.is_available()) else "cpu"
     if label_key not in reference.obs: raise ValueError(f"reference.obs has no column {label_key!r}")
-    q = _as_counts(query, query_counts_layer); r = _as_counts(reference, ref_counts_layer)
+    q = _as_counts(query, query_counts_layer, "spatial counts"); r = _as_counts(reference, ref_counts_layer, "reference")
     q.var_names_make_unique(); r.var_names_make_unique()
     common = [g for g in r.var_names if g in set(q.var_names)]
     if len(common) < 100: raise ValueError(f"only {len(common)} genes shared by the panel and the reference")
@@ -71,6 +80,7 @@ def main():
     ap.add_argument("--reference", required=True, help="single-cell reference .h5ad (raw counts)")
     ap.add_argument("--output", required=True, help="labels.parquet to write (cell_id, celltype, prob)")
     ap.add_argument("--ref-label-col", default="celltype", help="column of reference.obs with the cell type (default: celltype)")
+    ap.add_argument("--ref-counts-layer", help="layer of the reference with the raw counts (default: layers['counts'] if present, else X)")
     ap.add_argument("--ref-batch-col", help="column of reference.obs with a batch / sample id, corrected alongside the technology")
     ap.add_argument("--hvg", type=int, default=0, help="train on this many highly variable genes instead of all shared genes (recommended 4000 for 5K panels)")
     ap.add_argument("--epochs-scanvi", type=int, default=25); ap.add_argument("--seed", type=int, default=0)
@@ -78,8 +88,9 @@ def main():
     a = ap.parse_args()
     import anndata as ad
     q = read_spatial_counts(a.input); r = ad.read_h5ad(a.reference)
-    print(f"spatial cells {q.n_obs:,} x {q.n_vars:,} genes | reference {r.n_obs:,} cells, {r.obs[a.ref_label_col].nunique()} types", flush=True)
-    pred = annotate_scanvi_joint(q, r, label_key=a.ref_label_col, ref_batch_key=a.ref_batch_col, use_hvg=a.hvg > 0, n_hvg=a.hvg,
+    print(f"spatial cells {q.n_obs:,} x {q.n_vars:,} genes | reference {r.n_obs:,} cells, {r.obs[a.ref_label_col].nunique() if a.ref_label_col in r.obs else '?'} types", flush=True)
+    if a.ref_label_col not in r.obs: raise SystemExit(f"celldot-annotate: reference.obs has no column {a.ref_label_col!r} (columns: {list(r.obs.columns)})")
+    pred = annotate_scanvi_joint(q, r, label_key=a.ref_label_col, ref_batch_key=a.ref_batch_col, ref_counts_layer=a.ref_counts_layer, use_hvg=a.hvg > 0, n_hvg=a.hvg,
                                  max_epochs_scanvi=a.epochs_scanvi, seed=a.seed, gpu=not a.cpu)
     out = pd.DataFrame({"cell_id": pred.index.astype(str), "celltype": pred["pred"].astype(str).values, "prob": pred["prob"].astype(np.float32).values})
     out.to_parquet(a.output, index=False)

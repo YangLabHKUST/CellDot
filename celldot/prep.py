@@ -19,6 +19,30 @@ import os, json, time, glob, numpy as np, pandas as pd
 import anndata as ad, scanpy as sc, scipy.sparse as sp, pyarrow.parquet as pq
 from . import engine
 
+UNLABELLED = {"unknown", "unassigned", "unlabelled", "unlabeled", "na", "nan", "none", ""}   # label values that mean 'no type': left uncorrected
+
+
+def reference_counts(ref, layer=None, log=print):
+    """The reference's RAW COUNTS as a CSR matrix: ``layer`` if given, else ``layers['counts']`` when present, else ``X``.
+    Refuses normalised data (negative values, or mostly non-integer entries): a log-normalised reference silently
+    flattens the cell-type prior, so it is an error, not a warning."""
+    if layer:
+        if layer not in ref.layers: raise ValueError(f"reference has no layer {layer!r} (layers: {list(ref.layers.keys())})")
+        M, src = ref.layers[layer], f"layers[{layer!r}]"
+    elif "counts" in ref.layers: M, src = ref.layers["counts"], "layers['counts']"
+    else: M, src = ref.X, "X"
+    M = M.tocsr() if sp.issparse(M) else sp.csr_matrix(np.asarray(M))
+    v = M.data
+    if v.size and float(v.min()) < 0:
+        raise ValueError(f"reference {src} has negative values, so it is scaled data, not raw counts. CellDot needs the raw counts: "
+                         f"pass --ref-counts-layer <layer> or export the counts into X.")
+    frac = float(np.mean(v % 1 != 0)) if v.size else 0.0
+    if frac > 0.5:
+        raise ValueError(f"reference {src} does not look like raw counts ({frac:.0%} of the entries are not integers, max {float(v.max()):.2f}): "
+                         f"it is probably normalised. CellDot needs the raw counts: pass --ref-counts-layer <layer> or export the counts into X.")
+    log(f"reference counts: {src}" + (f" ({frac:.2%} of the entries are not integers; used as they are)" if frac > 0 else ""))
+    return M
+
 
 def prep(cfg):
     os.makedirs(cfg.assign_dir, exist_ok=True)
@@ -30,7 +54,7 @@ def prep(cfg):
     if "feature_types" in qh.var:
         qh = qh[:, qh.var["feature_types"].astype(str).str.contains("Gene", case=False, na=False)].copy()
     xen_panel = [str(g) for g in qh.var_names]
-    ref = ad.read_h5ad(cfg.reference); ref.X = ref.X.tocsr() if sp.issparse(ref.X) else sp.csr_matrix(ref.X)
+    ref = ad.read_h5ad(cfg.reference); ref.X = reference_counts(ref, cfg.ref_counts_layer, log)
     ref_genes = set(map(str, ref.var_names))
     panel = [g for g in xen_panel if g in ref_genes]; gidx = {g: i for i, g in enumerate(panel)}; G = len(panel)
     log(f"panel genes (Xenium ∩ ref): {G}  (Xenium {len(xen_panel)}, ref {ref.n_vars})")
@@ -41,9 +65,34 @@ def prep(cfg):
     lcol = "celltype" if "celltype" in lab.columns else ("type" if "type" in lab.columns else lab.columns[-1])
     type_of_cid = dict(zip(lab.cell_id.astype(str), lab[lcol].astype(str)))
     cells = pd.read_parquet(cfg.CELLS)
+    # Xenium 2.0 exports get the post-dilation background, which rasterises the cell polygons with scikit-image: check it
+    # is installed NOW, not after the transcript scan
+    _is2 = bool({"segmentation_method", "unassigned_codeword_counts", "deprecated_codeword_counts"} & set(cells.columns))  # Xenium 2.0 tight multimodal-stain seg (tight cells -> orphaned margin soup): 'segmentation_method', else the XOA-2.0 codeword columns (some 2.0 exports e.g. CRC ship these but OMIT segmentation_method); 1.0/nucleus-expansion (BC) has none
+    _delta = float(getattr(cfg, "BG_DILATE", 0.0)) if _is2 else 0.0     # post-dilation background ONLY on Xenium 2.0
+    if _delta > 0:
+        try:
+            import skimage.draw  # noqa: F401
+        except ImportError as e:
+            raise ImportError("this is a Xenium 2.0-style export (cells.parquet has segmentation_method / codeword columns), whose "
+                              "background estimate needs scikit-image: pip install scikit-image") from e
     A_intra_all = float(np.maximum(cells["cell_area"].values.astype(float), 1.0).sum()) if "cell_area" in cells else 0.0  # ALL segmented cells
     cells["type"] = cells.cell_id.astype(str).map(type_of_cid)
+    if cfg.ref_label_col not in ref.obs: raise ValueError(f"reference.obs has no column {cfg.ref_label_col!r} (columns: {list(ref.obs.columns)}); pass --ref-label-col")
     ref_types = sorted(ref.obs[cfg.ref_label_col].astype(str).unique())
+    # ---- every spatial label must be one of the reference's cell types (a misspelt type would silently lose its cells) ----
+    have = cells.cell_id.astype(str).isin(type_of_cid)
+    if not have.any():
+        raise ValueError(f"no cell of cells.parquet has a label in {cfg.labels}: the cell_id values do not match "
+                         f"(labels e.g. {list(lab.cell_id.astype(str).head(3))}, cells e.g. {list(cells.cell_id.astype(str).head(3))})")
+    lv = lab[lcol].astype(str); unmatched = lv[~lv.isin(ref_types)].value_counts()
+    if len(unmatched):
+        bad = unmatched[~unmatched.index.str.strip().str.lower().isin(UNLABELLED)]
+        if len(bad):
+            raise ValueError("labels that are not cell types of the reference: " + ", ".join(f"{t!r} ({n:,} cells)" for t, n in bad.items())
+                             + f". The reference's {cfg.ref_label_col!r} has: {ref_types}. Use exactly these names"
+                             + f" (cells to leave uncorrected may be labelled {sorted(UNLABELLED - {''})}).")
+        log("cells left uncorrected (no type): " + ", ".join(f"{t!r} {n:,}" for t, n in unmatched.items()))
+    if int((~have).sum()): log(f"{int((~have).sum()):,} of {len(cells):,} cells have no label -> left uncorrected")
     cells = cells[cells.type.isin(ref_types)].reset_index(drop=True)
     log(f"labelled cells: {len(cells)} | types ({cells.type.nunique()}): "
         + ", ".join(f"{t}:{n}" for t, n in cells.type.value_counts().items()))
@@ -120,9 +169,7 @@ def prep(cfg):
 
     # ---------- (optional) post-dilation background: exclude cell-MARGIN soup (tight 2.0 seg) before the ambient ----------
     A_extra_dbg = None                                                  # default => the block below is byte-identical
-    _is2 = bool({"segmentation_method", "unassigned_codeword_counts", "deprecated_codeword_counts"} & set(cells.columns))  # Xenium 2.0 tight multimodal-stain seg (tight cells -> orphaned margin soup): 'segmentation_method', else the XOA-2.0 codeword columns (some 2.0 exports e.g. CRC ship these but OMIT segmentation_method); 1.0/nucleus-expansion (BC) has none
-    _delta = float(getattr(cfg, "BG_DILATE", 0.0)) if _is2 else 0.0     # post-dilation background ONLY on Xenium 2.0
-    if _delta > 0:
+    if _delta > 0:                                                      # _is2 / _delta decided above, before the scan
         soup, A_extra_dbg, _dinfo = engine.dilated_background(
             cfg.TX, os.path.join(cfg.input, "cell_boundaries.parquet"), panel,
             delta=_delta, qv_min=cfg.qv, unassigned=cfg.unassigned)

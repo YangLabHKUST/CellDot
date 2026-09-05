@@ -22,6 +22,7 @@ class CellDotConfig:
     output: str                     # where CellDot writes (cleaned.h5ad, transcripts.parquet, intermediates)
     name: str = None                # a label stored in the outputs and shown by the viewer (default: the input folder's name)
     ref_label_col: str = "celltype" # column of reference.obs holding the cell type
+    ref_counts_layer: str = None    # layer of the reference holding the RAW COUNTS (default: layers['counts'] if present, else X)
     # ---- file names inside the input folder (Xenium defaults) ----
     tx_name: str = "transcripts.parquet"
     cells_name: str = "cells.parquet"
@@ -71,6 +72,11 @@ class CellDotConfig:
         if not self.name:
             p = os.path.normpath(os.path.abspath(self.input)); b = os.path.basename(p)
             self.name = os.path.basename(os.path.dirname(p)) if b in ("outs", "") else b
+        # never write into the platform folder: the output transcripts.parquet would overwrite the input one
+        real = lambda p: os.path.realpath(os.path.abspath(p))
+        if real(self.output) == real(self.input) or real(self.transcripts) == real(self.TX):
+            raise ValueError(f"output folder {self.output!r} is the input folder: CellDot would overwrite the platform's "
+                             f"transcripts.parquet. Give --output a folder of its own.")
 
     # ---- input paths ----
     @property

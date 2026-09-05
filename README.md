@@ -58,8 +58,8 @@ celldot-view --run celldot/ --boundaries outs/cell_boundaries.parquet      # ope
 | | |
 |:--|:--|
 | `--input` | the platform's output folder: `transcripts.parquet`, `cells.parquet`, `cell_feature_matrix.h5` |
-| `--reference` | a single-cell reference of the same tissue (`.h5ad`, raw counts, cell type in `obs["celltype"]`; another column with `--ref-label-col`) |
-| `--labels` | the spatial cells' types: a parquet with `cell_id`, `celltype` (step 1) |
+| `--reference` | a single-cell reference of the same tissue (`.h5ad`, raw counts in `X` or `layers["counts"]`, cell type in `obs["celltype"]`; other names with `--ref-counts-layer` / `--ref-label-col`) |
+| `--labels` | the spatial cells' types: a parquet with `cell_id`, `celltype` (step 1), using the reference's cell-type names |
 
 ## Outputs
 

@@ -3,7 +3,7 @@
 Runs the full pipeline (prep + solve) and writes cleaned.h5ad + transcripts.parquet into --output.
 Operating-point flags override the CellDotConfig defaults; --skip-prep reuses the intermediates already there.
 """
-import argparse, os
+import argparse, os, sys
 from .config import CellDotConfig
 from . import clean
 
@@ -15,6 +15,7 @@ def main():
     ap.add_argument("--labels", required=True, help="cell types of the spatial cells: labels.parquet with cell_id, celltype (e.g. from celldot-annotate)")
     ap.add_argument("--output", required=True, help="output folder")
     ap.add_argument("--ref-label-col", default="celltype", help="column of reference.obs with the cell type (default: celltype)")
+    ap.add_argument("--ref-counts-layer", help="layer of the reference with the raw counts (default: layers['counts'] if present, else X)")
     ap.add_argument("--name", help="a label stored in the outputs and shown by the viewer (default: the input folder's name)")
     ap.add_argument("--skip-prep", action="store_true", help="reuse the intermediates already in --output (run the solver only)")
     adv = ap.add_argument_group("advanced (the defaults were used for every dataset in the paper)")
@@ -26,12 +27,17 @@ def main():
     adv.add_argument("--niter", type=int, help="Sinkhorn sweeps (default 200)")
     args = ap.parse_args()
 
-    kw = dict(input=args.input, reference=args.reference, labels=args.labels, output=args.output, ref_label_col=args.ref_label_col, name=args.name)
+    kw = dict(input=args.input, reference=args.reference, labels=args.labels, output=args.output, ref_label_col=args.ref_label_col,
+              ref_counts_layer=args.ref_counts_layer, name=args.name)
     for flag, field in [("qv", "qv"), ("ell", "ELL"), ("z", "Z"), ("pw", "PW"), ("kappa", "KAPPA"), ("niter", "NITER")]:
         v = getattr(args, flag, None)
         if v is not None: kw[field] = v
-    os.makedirs(args.output, exist_ok=True)
-    clean(CellDotConfig(**kw), do_prep=not args.skip_prep)
+    try:
+        cfg = CellDotConfig(**kw)                                   # refuses --output inside/equal to --input
+        os.makedirs(args.output, exist_ok=True)
+        clean(cfg, do_prep=not args.skip_prep)
+    except (ValueError, ImportError) as e:                          # input problems: one clear line, no traceback
+        sys.exit(f"celldot: {e}")
 
 
 if __name__ == "__main__":
