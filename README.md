@@ -8,8 +8,8 @@
 
 Segmentation errors and spillover put many detected molecules in the wrong cell. CellDot decides, for every
 molecule of a section, whether it stays in its cell, moves to a neighbouring cell, or is removed as background,
-by solving one optimal-transport problem guided by a single-cell reference. No training, no tuning. The output is
-a corrected cell × gene matrix and the fate of each molecule.
+by solving one optimal-transport problem guided by a single-cell reference. The output is a corrected cell × gene
+matrix and the fate of each molecule.
 
 <p align="center"><img src="docs/figure1.png" width="880" alt="Overview of CellDot"></p>
 
