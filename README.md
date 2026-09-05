@@ -8,20 +8,13 @@ Molecule-level decontamination for imaging-based spatial transcriptomics (Xenium
 ---
 
 Segmentation errors, spillover and 3-D overlap put many detected molecules in the wrong cell. CellDot looks at
-**every molecule** of a section and decides, with one optimal-transport problem over the whole tissue:
+**every molecule** of a section and decides, with one optimal-transport problem over the whole tissue, whether it
+stays in its cell, belongs to a neighbouring cell, or is ambient background to be removed. The decision uses a
+single-cell reference of the tissue, the distance to nearby cells, how much of each gene a cell of that type can
+hold, and the background measured in the section itself. Nothing to train, nothing to tune: one setting was used
+for every dataset in the paper. You get a corrected cell × gene matrix **and** the fate of each molecule.
 
-| fate | |
-|:--|:--|
-| 🩶 **keep** | the molecule stays in its cell |
-| 🔵 **move** | it belongs to a neighbouring cell and is reassigned there |
-| 🔴 **drop** | it is ambient background and is removed |
-
-The decision uses a single-cell reference of the tissue, the distance to nearby cells, how much of each gene a
-cell of that type can hold, and the background measured in the section itself. Nothing to train, nothing to tune:
-one setting was used for every dataset in the paper. You get a corrected cell × gene matrix **and** the fate of
-each molecule, which the bundled viewer shows on the tissue.
-
-<p align="center"><a href="https://viewer.celldot.online/d/CRC/"><img src="docs/viewer.jpg" width="820" alt="CellDot viewer: a colorectal cancer section, CLCA1 molecules coloured by fate"></a></p>
+<p align="center"><img src="docs/figure1.png" width="880" alt="Overview of CellDot"></p>
 
 ## Install
 
@@ -89,14 +82,24 @@ panel, unlabelled cell) keep their original assignment.
 
 ## The viewer
 
-`celldot-view` is an interactive map of the section in your browser: cells coloured by type or by the expression
-of a gene before and after correction, the molecules of the genes you pick coloured by fate, an arrow from every
-moved molecule to its new cell, and a click on any cell lists all of its molecules. Try it on the paper's datasets
-at **[viewer.celldot.online](https://viewer.celldot.online)**.
+<p align="center"><a href="https://viewer.celldot.online/d/CRC/"><img src="docs/viewer.jpg" width="820" alt="CellDot viewer: a colorectal cancer section, CLCA1 molecules coloured by fate"></a></p>
 
-The first launch builds a query index next to the result (a minute per hundred million molecules); later launches
-are instant. To open on a chosen scene, press `shift+D` in the viewer: the current position, genes and settings
-are saved next to `cleaned.h5ad` and used from then on.
+An interactive map of the section in your browser: cells coloured by type or by the expression of a gene before
+and after correction, the molecules of the genes you pick coloured by fate (grey kept, blue moved with an arrow to
+the new cell, red dropped), and a click on any cell lists all of its molecules. Try it on the paper's datasets at
+**[viewer.celldot.online](https://viewer.celldot.online)**.
+
+To open it on your own result, point it at the CellDot output folder and the platform's cell boundaries:
+
+```bash
+celldot-view --run celldot/ --boundaries outs/cell_boundaries.parquet
+```
+
+The command builds a query index next to the result the first time (about a minute per hundred million
+molecules), starts a local server and opens http://127.0.0.1:8765 in your browser; later launches are instant.
+Type a gene to see its molecules, zoom in below 0.8 mm to see all genes, click a cell for its molecules, press `S`
+to hide moves between cells of the same type, `P` to save a PNG. To make the viewer open on a chosen scene next
+time, navigate there and press `shift+D`. On a remote machine add `--no-browser` and forward the port with ssh.
 
 ## Python
 
