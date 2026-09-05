@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 260 64" width="520" height="128" role="img" aria-label="CellDot">
+  <title>CellDot</title>
+  <g>
+    <path d="M32 11 C44 11 53 19 53 31 C53 43 45 55 32 55 C20 55 11 46 11 34 C11 22 20 11 32 11 Z"
+          fill="none" stroke="#17697F" stroke-width="3.2" stroke-linejoin="round"/>
+    <circle cx="24"   cy="28"   r="2.6" fill="#17697F"/>
+    <circle cx="33.5" cy="21.5" r="2.6" fill="#17697F"/>
+    <circle cx="26.5" cy="42"   r="2.6" fill="#17697F"/>
+    <circle cx="38.5" cy="45"   r="2.6" fill="#17697F"/>
+    <path d="M55.5 13.5 C51 17 47 22 43 28"
+          fill="none" stroke="#D9A441" stroke-width="2.6" stroke-linecap="round"/>
+    <path d="M43 28 l4.5 -2.2 M43 28 l0.3 -5.0"
+          fill="none" stroke="#D9A441" stroke-width="2.6" stroke-linecap="round"/>
+    <circle cx="58.5" cy="10" r="3.2" fill="#D9A441"/>
+  </g>
+  <!-- WORKING DRAFT: live text, so it renders anywhere without an embedded font.
+       Convert to outlines before this goes into a poster, a journal figure or a release. -->
+  <text x="80" y="41.5" font-family="Arial, Helvetica, sans-serif" font-size="30" letter-spacing="-0.4">
+    <tspan fill="#17697F" font-weight="600">Cell</tspan><tspan fill="#1A1A1A" font-weight="400">Dot</tspan>
+  </text>
+</svg>

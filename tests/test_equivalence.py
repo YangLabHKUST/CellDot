@@ -28,7 +28,7 @@ def check_format(out, fx):
     A = ad.read_h5ad(out + "/cleaned.h5ad"); cells = pd.read_parquet(fx["outs"] + "/cells.parquet")
     assert A.obs.index.name == "cell_id" and "cell_id" not in A.obs.columns, "obs must be indexed by cell_id (no column)"
     assert A.obs_names.is_unique and set(A.obs_names) <= set(cells["cell_id"].astype(str)), "obs_names must be original cell ids"
-    assert set(A.layers) == {"raw", "greedy", "celldot"} and "type" in A.obs
+    assert set(A.layers) == {"raw"} and "type" in A.obs, "cleaned.h5ad: X = corrected counts, layers['raw'] = before"
     tin = pq.read_table(fx["outs"] + "/transcripts.parquet"); tout = pq.read_table(out + "/transcripts.parquet")
     assert tout.num_rows == tin.num_rows, "transcripts.parquet must keep every input row"
     assert tout.column_names == tin.column_names + ["celldot_cell_id", "celldot_fate"], tout.column_names
@@ -54,7 +54,7 @@ def check_format(out, fx):
     assert np.array_equal(n_out, A.obs["n_moved_out"].values)
     r = A.obs_names.get_indexer(ncid_s[kp | mv]); c = A.var_names.get_indexer(gene[kp | mv])
     L = sp.coo_matrix((np.ones(len(r), np.float32), (r, c)), shape=A.shape).tocsr()
-    assert (L != A.layers["celldot"]).nnz == 0, "layers['celldot'] must equal the kept + moved molecules"
+    assert (L != A.X).nnz == 0, "X must equal the kept + moved molecules"
     r = A.obs_names.get_indexer(cid_s[ev]); c = A.var_names.get_indexer(gene[ev])
     R = sp.coo_matrix((np.ones(len(r), np.float32), (r, c)), shape=A.shape).tocsr()
     assert (R != A.layers["raw"]).nnz == 0, "layers['raw'] must equal the evaluated molecules by source"
@@ -87,15 +87,15 @@ def main():
         fx = make_synthetic(root, seed=1 if style == "xenium" else 2, id_style=style)
         print(f"\n=== id_style={style}: {fx['n_cells']} cells, {fx['n_mol']:,} cellular + {fx['n_soup']:,} soup molecules (unassigned={fx['unassigned']!r}) ===")
         out_cd = os.path.join(root, "celldot"); os.makedirs(out_cd, exist_ok=True)
-        cfg = CellDotConfig(outs=fx["outs"], reference=fx["reference"], labels=fx["labels"], out=out_cd, dataset=f"syn_{style}")
+        cfg = CellDotConfig(input=fx["outs"], reference=fx["reference"], labels=fx["labels"], output=out_cd, name=f"syn_{style}")
         clean(cfg)
         check_format(out_cd, fx); check_viewer(out_cd, fx)
         # ---- CLI path must reproduce the API run exactly ----
         out_cli = os.path.join(root, "celldot_cli"); os.makedirs(out_cli, exist_ok=True)
-        subprocess.run([sys.executable, "-m", "celldot", "--outs", fx["outs"], "--reference", fx["reference"], "--labels", fx["labels"],
-                        "--out", out_cli, "--dataset", f"syn_{style}"], check=True, cwd=ROOT, env={**os.environ, "PYTHONPATH": ROOT}, stdout=subprocess.DEVNULL)
+        subprocess.run([sys.executable, "-m", "celldot", "--input", fx["outs"], "--reference", fx["reference"], "--labels", fx["labels"],
+                        "--output", out_cli, "--name", f"syn_{style}"], check=True, cwd=ROOT, env={**os.environ, "PYTHONPATH": ROOT}, stdout=subprocess.DEVNULL)
         a = ad.read_h5ad(out_cd + "/cleaned.h5ad"); b = ad.read_h5ad(out_cli + "/cleaned.h5ad")
-        cli_same = (a.layers["celldot"] != b.layers["celldot"]).nnz == 0 and (a.obs_names == b.obs_names).all() and \
+        cli_same = (a.X != b.X).nnz == 0 and (a.obs_names == b.obs_names).all() and \
                    pq.read_table(out_cd + "/transcripts.parquet").equals(pq.read_table(out_cli + "/transcripts.parquet"))
         print(f"  CLI == API: {cli_same}"); ok_all &= cli_same
         # ---- spdenoise v0.1.1 on the same inputs must give the identical result ----

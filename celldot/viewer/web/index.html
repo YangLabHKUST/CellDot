@@ -1,6 +1,7 @@
 <!doctype html>
 <meta charset="utf-8">
 <title>CellDot viewer</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cpath d='M32 8 C46 8 56 18 56 32 C56 46 46 56 32 56 C18 56 8 47 8 33 C8 19 18 8 32 8 Z' fill='%2317697F'/%3E%3Ccircle cx='39' cy='25.5' r='6.4' fill='%23D9A441'/%3E%3C/svg%3E">
 <style>
   :root { --bg:#0b0d12; --panel:#141821; --line:#262c38; --fg:#e8eaf0; --mut:#98a2b3; --acc:#4f8ef7; --keep:#8a8f98; --move:#2f8fe0; --drop:#e5484d; }
   * { box-sizing:border-box; }
@@ -170,6 +171,7 @@ async function boot(){
   const H = parseHash(location.hash), V0 = Object.keys(H).length ? H : normView(VIEWCFG.default);   // URL > view file > built-in
   const iv = V0.view || fitView();
   applySettings(V0);
+  if(H.ui === false){ $("#left").style.display = "none"; $("#topright").style.display = "none"; $("#scale").style.display = "none"; }   // #ui=0: map only
   deckgl = new DeckGL({
     container: "map", views: [new OrthographicView({flipY: true})],
     initialViewState: iv, controller: {inertia: 200},
@@ -192,6 +194,7 @@ function parseHash(str){ const q = new URLSearchParams((str || "").replace(/^#/,
   if(q.get("genes")) o.genes = q.get("genes").split(",").map(g=>g.trim()).filter(g=>GIDX[g] !== undefined).map(g=>GIDX[g]);
   if(q.get("same") === "0") o.same = false;
   if(q.get("cell")) o.cell = q.get("cell");
+  if(q.get("ui") === "0") o.ui = false;
   return o; }
 function normView(d){                                   // view-file entry (object, or a URL hash string) -> internal view
   if(!d) return {}; if(typeof d === "string") return parseHash(d); const o = {};

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="CellDot">
+  <title>CellDot</title>
+  <!-- Small-size mark, and the favicon. Two opaque fills only: no stroke to thin out, no knockout to take
+       the page ground. A transparent dot was tried first and fails on a dark browser theme, where the hole
+       renders near-black inside dark teal. Gold on teal is ~3.2:1, above the non-text contrast floor, and
+       is identical on every background. -->
+  <path d="M32 8 C46 8 56 18 56 32 C56 46 46 56 32 56 C18 56 8 47 8 33 C8 19 18 8 32 8 Z" fill="#17697F"/>
+  <circle cx="39" cy="25.5" r="6.4" fill="#D9A441"/>
+</svg>

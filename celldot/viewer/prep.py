@@ -50,10 +50,11 @@ def read_run(h5_path):
         cx = col("x_centroid").astype(np.float64); cy = col("y_centroid").astype(np.float64)
         n_in = col("n_moved_in", np.zeros(N)); n_out = col("n_moved_out", np.zeros(N)); n_drop = col("n_dropped", np.zeros(N))
         var = f["var"]; vkey = _s(var.attrs["_index"]); genes = [_s(g) for g in var[vkey][:]]
-        raw = load_sparse(f["layers/raw"]) if "layers/raw" in f else load_sparse(f["X"])
+        # CellDot >= 0.1.1: X = corrected, layers/raw = before.  Earlier files: X = raw, layers/celldot = corrected.
         lay = "layers/celldot" if "layers/celldot" in f else ("layers/spdenoise" if "layers/spdenoise" in f else None)
-        assert lay, "cleaned.h5ad has no 'celldot' layer"
-        clean = load_sparse(f[lay])
+        assert lay or "layers/raw" in f, "cleaned.h5ad has neither a 'celldot' layer nor a 'raw' layer"
+        raw = load_sparse(f["layers/raw"]) if "layers/raw" in f else load_sparse(f["X"])
+        clean = load_sparse(f[lay]) if lay else load_sparse(f["X"])
         prov = {}
         for key in ("celldot", "spd"):
             if f"uns/{key}" in f:

@@ -1,9 +1,9 @@
 """Stage 2 — tile-Sinkhorn solver. Reads the prep artefacts and writes the cleaned data + provenance.
 
 Parameterised by ``CellDotConfig``. Reads the gamma-corrected prior (raw fallback), cells_index, transcript
-shards, ambient soup, and meta from ``cfg.out``; writes:
-  cleaned.h5ad         X=raw counts; layers raw / greedy / celldot; obs indexed by the ORIGINAL cell_id (type,
-                       centroid, per-cell fate counts); var genes (lambda0); uns['celldot'] provenance
+shards, ambient soup, and meta from ``cfg.output``; writes:
+  cleaned.h5ad         X = corrected counts, layers['raw'] = the counts before; obs indexed by the ORIGINAL cell_id
+                       (type, centroid, per-cell fate counts); var genes (lambda0); uns['celldot'] provenance
   transcripts.parquet  the INPUT transcripts.parquet, row for row and with every original column, plus
                        celldot_cell_id  the cell the molecule belongs to after correction (same dtype and vocabulary
                                         as cell_id; the platform's own unassigned value when it is background)
@@ -15,8 +15,7 @@ Geometry is centroid-minus-radius (d = dist_to_centroid - cell_radius, clipped a
 distance path exists in the engine (``tile_distance(mode='boundary')``) but is intentionally NOT wired in
 yet — see the design doc; this keeps the solver identical to the validated benchmark run.
 
-``greedy`` = per-molecule argmax affinity (no budget, no drop) — the reference ceiling baseline.
-``celldot`` = NB over-dispersed native budget (Z) + per-cell PHYSICAL background mu_bg = kappa*lambda0*area
+The solve: NB over-dispersed native budget (Z) + per-cell PHYSICAL background mu_bg = kappa*lambda0*area
 (firm one-sided column), sparse Sinkhorn.
 """
 import os, json, time, glob, hashlib, numpy as np, pandas as pd
@@ -108,7 +107,7 @@ def run(cfg):
                     host_ctype=torch.tensor(ctype[hp], device=dev, dtype=torch.long))   # host cell type (metacell_typed)
 
     x0g, y0g = xa.min(), ya.min(); nx = int((xa.max() - x0g) / TILE) + 1; ny = int((ya.max() - y0g) / TILE) + 1
-    acc = {"greedy": ([], []), "celldot": ([], [])}; ndrop = ncore = ntile = 0
+    acc = {"celldot": ([], [])}; ndrop = ncore = ntile = 0
     rx, ry, rgn, rold, rnew, rrow = [], [], [], [], [], []             # molecule reassignment record (CORE molecules)
     nbH = nbG = nbD = nbM = nbE = nbX = nbY = nbW = nbR = None
     if NB: nbH, nbG, nbD, nbM, nbE, nbX, nbY, nbW, nbR = [], [], [], [], [], [], [], [], []   # neighborhood Pass-1 buffers: host,gene,dest,margin,eligible,x,y,soup_w,tx_row
@@ -118,8 +117,6 @@ def run(cfg):
             T = build_tile(box)
             if T is None: continue
             ar = np.arange(T["M"]); core = T["core"]; idx = T["idx"]; gp = T["gp"]
-            gw = T["aff_np"].argmax(1)
-            acc["greedy"][0].append(idx[ar[core], gw[core]]); acc["greedy"][1].append(gp[core])
             out = engine.sinkhorn_solve(T["aff"], T["within"], T["candU"], T["gpt"], T["ctypeU"], T["NrawU"], RHOt, Ften, G, dev,
                                       lambda0=LAM0, host=T["host"], area_host=T["area_host"],
                                       budget="nb", pw=PW, drop=True, Z=Z, eps=EPS, niter=NITER, kappa=KAPPA, pw_bg=PW_BG, p_bg=PBG,
@@ -175,8 +172,8 @@ def run(cfg):
                         "drop_frac": (n_drop_c / np.maximum(n_host_c, 1)).astype(np.float32)},
                        index=pd.Index(cell_ids, name="cell_id"))                 # obs_names = the original cell_id
     var = pd.DataFrame({"lambda0": lambda0}, index=genes)                     # per-gene free-ambient areal density [tx/um^2]
-    A = ad.AnnData(X=raw, obs=obs, var=var)
-    A.layers["raw"] = raw; A.layers["greedy"] = mat(*acc["greedy"]); A.layers["celldot"] = mat(*acc["celldot"])
+    A = ad.AnnData(X=mat(*acc["celldot"]), obs=obs, var=var)     # X = the corrected counts
+    A.layers["raw"] = raw                                          # the counts before correction
 
     # ---- provenance: ONE record written into BOTH cleaned.h5ad (uns['celldot']) AND molecules.parquet (schema
     #      metadata key b'celldot'), so the cleaned layer and its per-molecule fate can NEVER silently drift.
@@ -193,7 +190,7 @@ def run(cfg):
                   tile=TILE, halo=HALO, niter=NITER, eps=EPS, qv=float(getattr(cfg, "qv", 0.0)),
                   lam=float(getattr(cfg, "lam", 0.0)), min_prob=float(getattr(cfg, "min_prob", 0.0)),
                   A_extra=round(A_extra, 1))
-    spd = dict(dataset=cfg.dataset, version=PKG_VERSION, n_tx=int(Ntx), n_tx_total=int(meta.get("n_tx_total", 0)),
+    spd = dict(dataset=cfg.name, version=PKG_VERSION, n_tx=int(Ntx), n_tx_total=int(meta.get("n_tx_total", 0)),
                drop_frac=round(ndrop / max(ncore, 1), 4), ambient_density=round(float(N_SOUP / max(A_extra, 1)), 5),
                n_cells=int(NCELL), n_genes=int(G), n_types=int(NT),
                n_keep=n_keep_m, n_move=n_move_m, n_drop=n_drop_m, params=params)

@@ -28,9 +28,8 @@ def compare(cd_h5ad, cd_mol, spd_h5ad, spd_mol, spd_cells_index, cd_prep=None, s
     res["var_names_equal"] = bool(list(A.var_names) == list(B.var_names))
     if not res["obs_names_equal_and_same_order"]:
         log("  obs order differs -> aligning by cell_id"); B = B[pd.Index(cid_spd).get_indexer(A.obs_names.values.astype(str))].copy()
-    for la, lb in [("raw", "raw"), ("greedy", "greedy"), ("celldot", "spdenoise")]:
-        res[f"layer_{la}=={lb}"] = _same_sparse(A.layers[la], B.layers[lb])
-    res["X==raw"] = _same_sparse(A.X, A.layers["raw"])
+    res["layer_raw==raw"] = _same_sparse(A.layers["raw"], B.layers["raw"])
+    res["X==spdenoise"] = _same_sparse(A.X, B.layers["spdenoise"])          # CellDot's X = the corrected counts
     for c in ["x_centroid", "y_centroid", "mu_bg", "n_dropped", "n_moved_out", "n_moved_in", "drop_frac"]:
         res[f"obs.{c}"] = bool(np.array_equal(A.obs[c].values, B.obs[c].values))
     res["obs.type"] = bool((A.obs["type"].astype(str).values == B.obs["type"].astype(str).values).all())

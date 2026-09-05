@@ -5,20 +5,19 @@ removed as background, by solving a sparse capacitated entropic optimal transpor
 against a paired single-cell reference prior and data-calibrated capacity constraints. No neural
 network, no training.
 
-Pipeline (raw outs + reference + labels -> cleaned data):
+Pipeline (platform output folder + reference + labels -> cleaned data):
     from celldot import CellDotConfig, clean
-    cfg = CellDotConfig(outs="…/outs", reference="…/ref.h5ad", labels="…/labels.parquet",
-                        out="…/run", ref_label="celltype", dataset="my_sample")
-    clean(cfg)                      # writes cfg.out/{cleaned.h5ad, molecules.parquet, rho_tilde*, ambient, meta}
+    cfg = CellDotConfig(input="…/outs", reference="…/ref.h5ad", labels="…/labels.parquet", output="…/celldot")
+    clean(cfg)                      # writes cfg.output/{cleaned.h5ad, transcripts.parquet} (+ intermediates)
 
 or on the command line:
-    python -m celldot --outs …/outs --reference …/ref.h5ad --labels …/labels.parquet --out …/run
+    celldot --input …/outs --reference …/ref.h5ad --labels …/labels.parquet --output …/celldot
+    celldot-annotate …              # cell-type labels by scANVI label transfer, if you have none yet
 
 ``prep(cfg)`` builds the data contract; ``run(cfg)`` solves and writes the outputs; ``clean(cfg)`` does both.
-Labels (cell -> type) are produced by an upstream annotation step (e.g. scANVI) and supplied as a parquet.
 
 Cell identity: every output names a cell by its ORIGINAL platform ``cell_id`` — ``cleaned.h5ad`` is indexed
-by it (``obs_names``) and ``molecules.parquet`` records each molecule's source and destination cell by it.
+by it (``obs_names``) and ``transcripts.parquet`` is the input table row for row with the decision appended.
 """
 from .config import CellDotConfig
 
@@ -43,7 +42,7 @@ def __getattr__(name):
 def clean(cfg, do_prep=True):
     """Full pipeline: build the data contract (prep) then solve (run). Returns the cleaned AnnData.
 
-    Set ``do_prep=False`` to reuse artefacts already in ``cfg.out`` and run only the solver."""
+    Set ``do_prep=False`` to reuse artefacts already in ``cfg.output`` and run only the solver."""
     from .prep import prep
     from .run import run
     if do_prep:
@@ -55,4 +54,4 @@ __all__ = [
     "CellDotConfig", "prep", "run", "clean", "engine", "read_provenance",
     "sinkhorn_solve", "neighborhood_decode", "estimate_fano", "background_params",
 ]
-__version__ = "0.1.0"
+__version__ = "0.2.0"

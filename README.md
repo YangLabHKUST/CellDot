@@ -1,236 +1,113 @@
-# CellDot
+<p align="center"><img src="docs/celldot-lockup.svg" width="380" alt="CellDot"></p>
 
-**Molecule-level decontamination for imaging-based spatial transcriptomics.**
+<p align="center"><b>Every molecule in the right cell.</b><br>
+Molecule-level decontamination for imaging-based spatial transcriptomics (Xenium, MERSCOPE, CosMx, whole-transcriptome panels).</p>
 
-Imaging-based platforms (Xenium, MERSCOPE, CosMx, and whole-transcriptome panels such as Atera) detect
-individual RNA molecules, but segmentation errors, transcript spillover and three-dimensional cell overlap
-assign many of them to the wrong cell. CellDot decides the fate of **every transcript** by solving one
-optimal-transport problem over the whole section:
-
-| fate | meaning |
-|---|---|
-| **keep** | the molecule stays in the cell it was assigned to |
-| **move** | it is reassigned to a nearby cell whose type explains it better |
-| **drop** | it is removed as background |
-
-The decision combines a paired single-cell reference (which genes each cell type expresses), spatial
-distance, a per-cell *expression capacity* (a cell cannot hold more of a gene than its type is expected to
-express) and a per-cell *background capacity* measured from the extracellular molecules of the same
-section. There is no training and nothing to tune: one operating point was used for every dataset in the
-paper. The output is a corrected cell × gene matrix **and** the input transcript table written back with the
-fate of every molecule, which the bundled viewer lets you inspect cell by cell.
+<p align="center"><a href="https://viewer.celldot.online">Live demo</a> · <a href="#install">Install</a> · <a href="#run-celldot-in-three-steps">Run</a> · <a href="#outputs">Outputs</a> · <a href="#the-viewer">Viewer</a></p>
 
 ---
 
-## Installation
+Segmentation errors, spillover and 3-D overlap put many detected molecules in the wrong cell. CellDot looks at
+**every molecule** of a section and decides, with one optimal-transport problem over the whole tissue:
+
+| fate | |
+|:--|:--|
+| 🩶 **keep** | the molecule stays in its cell |
+| 🔵 **move** | it belongs to a neighbouring cell and is reassigned there |
+| 🔴 **drop** | it is ambient background and is removed |
+
+The decision uses a single-cell reference of the tissue, the distance to nearby cells, how much of each gene a
+cell of that type can hold, and the background measured in the section itself. Nothing to train, nothing to tune:
+one setting was used for every dataset in the paper. You get a corrected cell × gene matrix **and** the fate of
+each molecule, which the bundled viewer shows on the tissue.
+
+<p align="center"><a href="https://viewer.celldot.online/d/CRC/"><img src="docs/viewer.jpg" width="820" alt="CellDot viewer: a colorectal cancer section, CLCA1 molecules coloured by fate"></a></p>
+
+## Install
 
 ```bash
 git clone https://github.com/YangLabHKUST/CellDot.git
 cd CellDot
-pip install -e .              # core: numpy scipy pandas torch anndata pyarrow scikit-learn scanpy
-pip install -e ".[viewer]"    # + duckdb fastapi uvicorn h5py  (the interactive viewer)
-pip install scikit-image      # only for Xenium 2.0 exports (post-dilation background estimate)
+pip install -e ".[viewer,annotate]"
 ```
 
-Python ≥ 3.10. A CUDA GPU is used automatically when available; otherwise CellDot runs on the CPU
-(slower, same result).
+Python ≥ 3.10. A CUDA GPU is used when present; the CPU gives the same result, more slowly.
 
-## Quick start
+## Run CellDot in three steps
+
+**1. Cell types for the spatial cells.** CellDot needs a label for each cell in the reference's vocabulary. If you
+do not have one yet, `celldot-annotate` transfers the reference labels with scANVI (the recipe used in the paper);
+any other annotation works too (marker scoring, cell2location, Tangram, …) as long as it yields a table with
+`cell_id` and `celltype`.
 
 ```bash
-celldot --outs  /data/sample/outs \
-        --reference /data/sample/reference.h5ad \
-        --labels /data/sample/labels.parquet \
-        --out   /data/sample/celldot \
-        --ref-label celltype --dataset sample
-
-celldot-view --run /data/sample/celldot --boundaries /data/sample/outs/cell_boundaries.parquet
+celldot-annotate --input outs/ --reference reference.h5ad --output labels.parquet
 ```
 
-The same from Python:
+**2. Clean.**
 
-```python
-from celldot import CellDotConfig, clean
-cfg = CellDotConfig(outs="/data/sample/outs", reference="/data/sample/reference.h5ad",
-                    labels="/data/sample/labels.parquet", out="/data/sample/celldot",
-                    ref_label="celltype", dataset="sample")
-adata = clean(cfg)          # prep (reference prior, background estimate) + solve
+```bash
+celldot --input outs/ --reference reference.h5ad --labels labels.parquet --output celldot/
 ```
 
-`clean` runs the two stages `prep` and `run`; `clean(cfg, do_prep=False)` (or `celldot --skip-prep`)
-re-solves with the prep artefacts already in the output directory.
+**3. Look at the result.**
+
+```bash
+celldot-view --run celldot/ --boundaries outs/cell_boundaries.parquet      # opens http://127.0.0.1:8765
+```
+
+`outs/` is the folder your platform exported (for Xenium, the `outs` folder with `transcripts.parquet`,
+`cells.parquet`, `cell_feature_matrix.h5` and `cell_boundaries.parquet`). The breast cancer section of the paper
+(168 k cells, 31 M molecules) takes about five minutes on one GPU.
 
 ## Inputs
 
-| input | what CellDot needs |
-|---|---|
-| `outs/` | the platform export: `transcripts.parquet` (`feature_name`, `x_location`, `y_location`, `cell_id`, `qv`), `cells.parquet` (`cell_id`, `x_centroid`, `y_centroid`, `cell_area`, …) and `cell_feature_matrix.h5` (10x HDF5; used for the gene panel). These are the standard Xenium output files. Other platforms work as long as the same columns are provided; `--unassigned` sentinels default to `UNASSIGNED` and `-1`. |
-| reference `.h5ad` | a single-cell reference of the same tissue with **raw counts** in `X` and the cell-type label in `obs[ref_label]`. Genes are matched by `var_names`; only panel genes present in the reference are used. |
-| `labels.parquet` | the spatial cells' cell types: columns `cell_id`, `celltype` (and optionally `prob`). The vocabulary must be the reference's. In the paper the labels come from scANVI label transfer; any annotation works. Cells without a label are left untouched. |
-
-For Xenium 2.0 exports (multimodal segmentation; detected automatically from `cells.parquet`), CellDot
-excludes unassigned molecules within 3 µm of a cell before estimating the background (`BG_DILATE`).
+| | |
+|:--|:--|
+| `--input` | the platform's output folder: `transcripts.parquet`, `cells.parquet`, `cell_feature_matrix.h5` |
+| `--reference` | a single-cell reference of the same tissue (`.h5ad`, raw counts, cell type in `obs["celltype"]`; another column with `--ref-label-col`) |
+| `--labels` | the spatial cells' types: a parquet with `cell_id`, `celltype` (step 1) |
 
 ## Outputs
 
-A run produces **two files** in `--out`: `cleaned.h5ad` (the cells) and `transcripts.parquet` (the molecules).
-**Cells are identified only by their original `cell_id`** and **molecules only by their row in the platform's
-`transcripts.parquet`**: the output table is that file, row for row and with every original column, plus
-CellDot's decision. There is no separate integer index anywhere.
+Two files in `--output`, and nothing else you need to read:
 
-### `cleaned.h5ad`
-
-```python
-import anndata as ad
-A = ad.read_h5ad("celldot/cleaned.h5ad")
-A.obs_names            # the original cell ids (strings)
-A.layers["celldot"]    # corrected counts  (A.layers["raw"] = before; A.layers["greedy"] = no-capacity baseline)
-A.obs["type"]          # the cell type used for the run, plus x/y_centroid, n_dropped, n_moved_out, n_moved_in, drop_frac, mu_bg
-A.var["lambda0"]       # per-gene background density (molecules / µm²)
-A.uns["celldot"]       # provenance: version, parameters, run_id, fate totals
-```
-
-### `transcripts.parquet`
-
-The platform's `transcripts.parquet` with the same rows in the same order (row groups included) and every
-original column unchanged (`transcript_id`, `cell_id`, `feature_name`, `x_location`, `y_location`, `qv`, …),
-plus two columns:
-
-| column | content |
-|---|---|
-| `celldot_cell_id` | the cell the molecule belongs to after correction, in the same dtype and vocabulary as `cell_id`; the platform's own "no cell" value (`UNASSIGNED`, or `-1` in older Xenium exports) when it is background |
-| `celldot_fate` | `keep` (stays in `cell_id`), `move` (reassigned to `celldot_cell_id`), `drop` (removed as background), `background` (was extracellular in the input; unchanged), `not_evaluated` (quality below `qv`, gene outside the panel, or host cell without a label; unchanged) |
+| | |
+|:--|:--|
+| `cleaned.h5ad` | the cells. `X` is the corrected count matrix, `layers["raw"]` the counts before, `obs["type"]` the cell type; `obs_names` are the original cell ids. |
+| `transcripts.parquet` | the molecules: your input table, row for row and every column unchanged, plus `celldot_fate` (`keep` / `move` / `drop`) and `celldot_cell_id` (the cell the molecule belongs to now). |
 
 ```python
-import pandas as pd
+import anndata as ad, pandas as pd
+A = ad.read_h5ad("celldot/cleaned.h5ad")          # A.X corrected, A.layers["raw"] before
 t = pd.read_parquet("celldot/transcripts.parquet")
-t.celldot_fate.value_counts()
-moved = t[t.celldot_fate == "move"]                  # every reassigned molecule: from cell_id to celldot_cell_id
-t[t.cell_id == "aaabbccd-1"]                         # the fate of one cell's molecules
+t.celldot_fate.value_counts()                     # keep / move / drop (+ background, not_evaluated: untouched rows)
 ```
 
-`A.layers["celldot"]` is exactly the `keep` and `move` rows counted by `celldot_cell_id` × `feature_name`,
-and `A.layers["raw"]` the `keep`, `move` and `drop` rows counted by `cell_id`. `celldot.read_provenance(path)`
-returns the same provenance record from either file (a matched pair shares `run_id`).
-
-### Other files
-
-`rho_tilde.parquet` / `rho_tilde_corrected.parquet` (reference prior and its platform-corrected form),
-`ambient_profile_ag.parquet` and `dataset_meta.json` (background estimate), `cells_index.parquet` and
-`assign/` (the cell table and per-molecule shards written by `prep`).
+Molecules that were extracellular in the input (`background`) or not evaluated (low quality, gene outside the
+panel, unlabelled cell) keep their original assignment.
 
 ## The viewer
 
-Three files are all it needs: the two CellDot outputs and the platform's cell boundaries.
+`celldot-view` is an interactive map of the section in your browser: cells coloured by type or by the expression
+of a gene before and after correction, the molecules of the genes you pick coloured by fate, an arrow from every
+moved molecule to its new cell, and a click on any cell lists all of its molecules. Try it on the paper's datasets
+at **[viewer.celldot.online](https://viewer.celldot.online)**.
 
-```bash
-celldot-view --run <out dir> --boundaries <cell_boundaries.parquet>     # then open http://127.0.0.1:8765
-celldot-view --h5ad cleaned.h5ad --transcripts transcripts.parquet --boundaries cell_boundaries.parquet
-celldot-view --bundle <dir>/viewer_bundle                              # a bundle built earlier (or downloaded): no h5ad needed
+The first launch builds a query index next to the result (a minute per hundred million molecules); later launches
+are instant. To open on a chosen scene, press `shift+D` in the viewer: the current position, genes and settings
+are saved next to `cleaned.h5ad` and used from then on.
+
+## Python
+
+```python
+from celldot import CellDotConfig, clean
+A = clean(CellDotConfig(input="outs/", reference="reference.h5ad", labels="labels.parquet", output="celldot/"))
 ```
 
-A public demo with three datasets runs at https://huggingface.co/spaces/CyhVVVV/CellDotViewer (the bundles are in
-https://huggingface.co/datasets/CyhVVVV/celldot-demo-data). To host several results yourself, `celldot.viewer.multi.create_multi_app`
-serves a landing page and one viewer per dataset from a single process; the Space's `app.py` is a 30-line example.
-
-An interactive, Xenium-Explorer-style map of the section built on deck.gl, with a small DuckDB server
-behind it. Only what is in the viewport is ever sent to the browser, so it works the same on a 300-gene
-panel and on a whole-transcriptome section with a billion molecules.
-
-- **Cells** as polygons (when zoomed in) or points (whole section), coloured by cell type, by the raw or
-  cleaned expression of a gene, by the *change* (cleaned − raw), or by the fraction of molecules dropped
-  or moved out. Click a type in the legend to hide it.
-- **Molecules** of the genes you pick, or of *all* genes once you are zoomed in, coloured by fate or by
-  gene, with arrows from each moved molecule to the cell it now belongs to. Hover for gene, fate, source
-  and destination cell.
-- **Same-type moves.** The switch at the top right (key `S`, on by default) draws a molecule that moved
-  between two cells of the *same* cell type as kept, without an arrow, so the arrows show only the moves
-  that change a molecule's cell type. The status bar and each cell's tooltip report both counts.
-- **Click a cell** to see its id, type, molecule counts, every gene's raw and cleaned count, and all of
-  its molecules highlighted: kept, arriving, leaving and dropped.
-- **Links.** The URL keeps the view, the selected genes, the switch and the selected cell
-  (`#cell=<cell_id>`), so a link to one cell or one scene can be shared.
-- **Keys.** `F` fit to tissue, `Esc` clear the selection, `A` arrows on/off, `S` same-type moves,
-  `P` save the map as PNG, `shift+D` set the current scene as the default view, `shift+B` add a bookmark
-  (the last two write the view file described next; hover the counts under the title for the list).
-
-**Opening view (optional).** The viewer opens fitted to the tissue with a couple of marker genes preselected.
-To open on a chosen scene instead, put a `celldot_view.json` next to `cleaned.h5ad` (or pass `--view`); without
-the file nothing changes, so ordinary runs need none. The easiest way to write it is `shift+D` in the viewer,
-which stores the current position, width, genes, selected cell and settings as the default view; `shift+B`
-stores the scene as a named bookmark, and bookmarks appear as buttons at the bottom of the panel (shift-click
-one to remove it). By hand:
-
-```json
-{"default": {"x": 4218.7, "y": 2936.8, "width_um": 50, "genes": ["CLCA1"], "cell": null},
- "bookmarks": [{"name": "tumor boundary", "view": {"x": 3100, "y": 2200, "width_um": 400, "genes": ["EPCAM", "PTPRC"]}},
-               {"name": "one cell", "view": "#x=898&y=1009&zoom=5&cell=abcdefgh-1"}],
- "type_colors": {"Tumor": "#d62728", "Stroma": "#8c8c8c"}}
-```
-
-A view is an object (`x`, `y` and `width_um` or `zoom`; `genes`; `cell` or `null`; `same`, `all_genes`,
-`outlines`, `arrows`, `opacity`, `psize`; `color` fate/gene; `cells` type/clean/raw/delta/dropfrac/movefrac/none;
-`fill_gene`) or a URL hash copied from the address bar. A hash in the URL always wins over the file, so shared
-links keep working. `type_colors` overrides the palette by cell-type name, for instance to match a figure.
-Saving from the page is enabled only when the server listens on localhost.
-
-The first launch builds a query bundle next to the h5ad (`viewer_bundle/`, a few hundred MB per hundred
-million molecules; about a minute per hundred million molecules); a bundle built by an older CellDot is
-rebuilt automatically. Use `--rebuild` after re-running CellDot, `--port` to change the port,
-`--no-browser` on a server (then tunnel the port with ssh).
-
-## Relation to the research package (`spdenoise`)
-
-CellDot is the release form of the `spdenoise` research code and gives **exactly** the same result; only
-the identity scheme and the output files changed (spdenoise numbered cells and genes by position and wrote
-its own molecule table). `tests/compare_outputs.py --celldot <dir> --spdenoise <dir>` checks a run of each
-against the other.
-
-## Parameters
-
-All defaults live in `CellDotConfig`; they are the shipped operating point and were used unchanged for
-every dataset in the paper. They rarely need to change.
-
-| field | default | role |
-|---|---|---|
-| `K`, `R` | 14, 15 µm | candidate cells per molecule and the maximum reassignment distance |
-| `ELL` | 4.7 µm | distance scale of the transport cost |
-| `Z` | 2 | width of the expression-capacity band |
-| `KAPPA` | 1.2 | background capture efficiency (background capacity = κ · λ⁰ · cell area) |
-| `PW`, `PW_BG` | 0.3, 1.0 | firmness of the two capacity projections |
-| `EPS`, `NITER` | 1, 200 | entropic temperature and Sinkhorn sweeps |
-| `TILE`, `HALO` | 500 µm, 15 µm | tiling of the section (lower `TILE` to reduce memory) |
-| `BG_RADIUS` | 100 µm | window over which the background budget is pooled when decoding drops |
-| `BG_DILATE` | 3 µm | margin excluded from the background estimate on Xenium 2.0 exports |
-| `qv`, `min_ref`, `min_spatial` | 20, 20, 50 | molecule quality cut; minimum reference / spatial cells per type |
-
-CLI overrides: `--qv --ell --z --pw --kappa --niter`.
-
-## Resources
-
-Runtime and memory scale with the number of molecules. On one V100 GPU the breast cancer section
-(168 k cells, 31 M molecules) takes about five minutes; a whole-transcriptome section (718 k cells, 881 M
-molecules, 17 k genes) takes a few hours and several hundred GB of RAM. The solver is tiled, so GPU
-memory needs are modest.
-
-## Tests
-
-```bash
-python tests/test_neighborhood_decode.py    # window decode against a brute-force reference
-python tests/test_equivalence.py            # synthetic Xenium-style data: output contract, CLI, viewer
-                                            # bundle, and exact equality with spdenoise if present
-```
-
-## Layout
-
-| path | what |
-|---|---|
-| `celldot/engine.py` | the solver (Sinkhorn with capacities, window decode, background estimators) |
-| `celldot/prep.py`, `celldot/run.py` | the two stages; `config.py` holds `CellDotConfig` |
-| `celldot/viewer/` | `celldot-view`: bundle builder, DuckDB API server, deck.gl front end |
-| `tests/` | unit and end-to-end tests, output comparison, synthetic data generator |
+`celldot --help` lists the advanced parameters; they were left at their defaults for every dataset in the paper.
 
 ## Citation
 
-Chen Y., Liu Y., et al. *Accurate and scalable decontamination of imaging-based spatial transcriptomics
-via optimal transport* (manuscript in preparation).
+Chen Y., Liu Y., et al. *Accurate and scalable decontamination of imaging-based spatial transcriptomics via optimal
+transport.* (manuscript in preparation)

@@ -1,6 +1,6 @@
 [project]
 name = "celldot"
-version = "0.1.0"
+version = "0.2.0"
 description = "CellDot: reference-guided optimal-transport decontamination for imaging-based spatial transcriptomics"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -18,9 +18,11 @@ dependencies = [
 [project.scripts]
 celldot = "celldot.__main__:main"
 celldot-view = "celldot.viewer.__main__:main"
+celldot-annotate = "celldot.annotate:main"
 
 [project.optional-dependencies]
 viewer = ["duckdb>=0.10", "fastapi", "uvicorn", "h5py"]   # celldot-view
+annotate = ["scvi-tools"]       # celldot-annotate (scANVI label transfer)
 xenium2 = ["scikit-image"]      # post-dilation background on Xenium 2.0 segmentations (engine.dilated_background)
 dev = ["matplotlib", "shapely"]
 

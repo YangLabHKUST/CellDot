@@ -1,8 +1,9 @@
 """CellDotConfig — the single config object for a CellDot run.
 
-Holds the input paths (raw Xenium ``outs/`` + reference h5ad + precomputed cell-type ``labels``), the
-output directory, and the operating point. All derived artefact paths live under ``out`` so a run is
-fully self-contained. Annotation is upstream: ``labels`` is a parquet of (cell_id, celltype[, prob]).
+Holds the input paths (the platform's output folder + reference h5ad + the cell-type ``labels`` of the spatial
+cells), the output folder, and the operating point. All derived artefact paths live under ``output`` so a run
+is fully self-contained. Annotation is upstream (``celldot-annotate`` or any other method): ``labels`` is a
+parquet of (cell_id, celltype[, prob]).
 
 Identity: every artefact CellDot writes names a cell by its ORIGINAL ``cell_id`` and a molecule by its position
 in the platform's ``transcripts.parquet`` (the output ``transcripts.parquet`` is that table, row for row, with the
@@ -15,13 +16,13 @@ from dataclasses import dataclass
 @dataclass
 class CellDotConfig:
     # ---- inputs ----
-    outs: str                       # raw Xenium output dir (transcripts.parquet, cells.parquet, cell_feature_matrix.h5)
-    reference: str                  # scRNA reference h5ad (var_names = genes; obs[ref_label] = cell-type vocabulary)
-    labels: str                     # parquet of (cell_id, celltype[, prob]) — precomputed annotation (e.g. scANVI)
-    out: str                        # output directory (all artefacts written here)
-    dataset: str = "dataset"
-    ref_label: str = "celltype"     # obs column in the reference giving the type vocabulary
-    # ---- file names inside outs (Xenium defaults) ----
+    input: str                      # the platform's output folder (transcripts.parquet, cells.parquet, cell_feature_matrix.h5)
+    reference: str                  # single-cell reference h5ad (raw counts; obs[ref_label_col] = cell type)
+    labels: str                     # cell types of the spatial cells: parquet with cell_id, celltype[, prob]
+    output: str                     # where CellDot writes (cleaned.h5ad, transcripts.parquet, intermediates)
+    name: str = None                # a label stored in the outputs and shown by the viewer (default: the input folder's name)
+    ref_label_col: str = "celltype" # column of reference.obs holding the cell type
+    # ---- file names inside the input folder (Xenium defaults) ----
     tx_name: str = "transcripts.parquet"
     cells_name: str = "cells.parquet"
     cellfeat_name: str = "cell_feature_matrix.h5"
@@ -66,28 +67,33 @@ class CellDotConfig:
     cleaned_path: str = None
     transcripts_path: str = None
 
+    def __post_init__(self):
+        if not self.name:
+            p = os.path.normpath(os.path.abspath(self.input)); b = os.path.basename(p)
+            self.name = os.path.basename(os.path.dirname(p)) if b in ("outs", "") else b
+
     # ---- input paths ----
     @property
-    def TX(self): return os.path.join(self.outs, self.tx_name)
+    def TX(self): return os.path.join(self.input, self.tx_name)
     @property
-    def CELLS(self): return os.path.join(self.outs, self.cells_name)
+    def CELLS(self): return os.path.join(self.input, self.cells_name)
     @property
-    def CELLFEAT(self): return os.path.join(self.outs, self.cellfeat_name)
+    def CELLFEAT(self): return os.path.join(self.input, self.cellfeat_name)
 
-    # ---- output artefacts (override path wins, else out-based default) ----
+    # ---- output artefacts (override path wins, else output-based default) ----
     @property
-    def rho(self): return self.rho_path or os.path.join(self.out, "rho_tilde.parquet")              # uncorrected reference prior
+    def rho(self): return self.rho_path or os.path.join(self.output, "rho_tilde.parquet")              # uncorrected reference prior
     @property
-    def rho_corrected(self): return self.rho_corrected_path or os.path.join(self.out, "rho_tilde_corrected.parquet")  # gamma-corrected (model prior)
+    def rho_corrected(self): return self.rho_corrected_path or os.path.join(self.output, "rho_tilde_corrected.parquet")  # gamma-corrected (model prior)
     @property
-    def cells_index(self): return self.cells_index_path or os.path.join(self.out, "cells_index.parquet")  # cell_id, type, centroid (the cell table)
+    def cells_index(self): return self.cells_index_path or os.path.join(self.output, "cells_index.parquet")  # cell_id, type, centroid (the cell table)
     @property
-    def assign_dir(self): return self.assign_path or os.path.join(self.out, "assign")               # per-row-group transcript shards
+    def assign_dir(self): return self.assign_path or os.path.join(self.output, "assign")               # per-row-group transcript shards
     @property
-    def ambient(self): return self.ambient_path or os.path.join(self.out, "ambient_profile_ag.parquet")  # gene -> n_extra, a_g
+    def ambient(self): return self.ambient_path or os.path.join(self.output, "ambient_profile_ag.parquet")  # gene -> n_extra, a_g
     @property
-    def meta(self): return self.meta_path or os.path.join(self.out, "dataset_meta.json")
+    def meta(self): return self.meta_path or os.path.join(self.output, "dataset_meta.json")
     @property
-    def cleaned(self): return self.cleaned_path or os.path.join(self.out, "cleaned.h5ad")           # layers raw/greedy/celldot
+    def cleaned(self): return self.cleaned_path or os.path.join(self.output, "cleaned.h5ad")           # X = corrected counts, layers['raw'] = before
     @property
-    def transcripts(self): return self.transcripts_path or os.path.join(self.out, "transcripts.parquet")  # the input transcripts + celldot_cell_id, celldot_fate
+    def transcripts(self): return self.transcripts_path or os.path.join(self.output, "transcripts.parquet")  # the input transcripts + celldot_cell_id, celldot_fate

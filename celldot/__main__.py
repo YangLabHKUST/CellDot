@@ -1,7 +1,7 @@
-"""CLI entry point:  python -m celldot --outs … --reference … --labels … --out …
+"""CLI entry point:  celldot --input <platform output folder> --reference ref.h5ad --labels labels.parquet --output <folder>
 
-Runs the full pipeline (prep + solve) and writes cleaned.h5ad + molecules.parquet (+ priors/ambient/meta)
-into --out. Operating-point flags override the CellDotConfig defaults; --skip-prep reuses existing artefacts.
+Runs the full pipeline (prep + solve) and writes cleaned.h5ad + transcripts.parquet into --output.
+Operating-point flags override the CellDotConfig defaults; --skip-prep reuses the intermediates already there.
 """
 import argparse, os
 from .config import CellDotConfig
@@ -9,27 +9,28 @@ from . import clean
 
 
 def main():
-    ap = argparse.ArgumentParser(
-        prog="celldot",
-        description="reference-guided optimal-transport decontamination -> cleaned.h5ad + per-molecule fates")
-    ap.add_argument("--outs", required=True, help="raw Xenium output dir (transcripts.parquet, cells.parquet, cell_feature_matrix.h5)")
-    ap.add_argument("--reference", required=True, help="scRNA reference h5ad (obs[ref-label] = cell types)")
-    ap.add_argument("--labels", required=True, help="labels.parquet (cell_id, celltype[, prob]) from upstream annotation")
-    ap.add_argument("--out", required=True, help="output directory")
-    ap.add_argument("--ref-label", default="celltype", help="reference obs column with the type vocabulary")
-    ap.add_argument("--dataset", default="dataset")
-    ap.add_argument("--skip-prep", action="store_true", help="reuse artefacts already in --out (run solver only)")
-    # operating-point overrides (default = CellDotConfig defaults)
-    ap.add_argument("--qv", type=float); ap.add_argument("--ell", type=float); ap.add_argument("--z", type=float)
-    ap.add_argument("--pw", type=float); ap.add_argument("--kappa", type=float); ap.add_argument("--niter", type=int)
+    ap = argparse.ArgumentParser(prog="celldot", description="CellDot: decide the fate of every molecule (keep / move / drop) -> cleaned.h5ad + transcripts.parquet")
+    ap.add_argument("--input", required=True, help="the platform's output folder (transcripts.parquet, cells.parquet, cell_feature_matrix.h5)")
+    ap.add_argument("--reference", required=True, help="single-cell reference .h5ad (raw counts; a cell-type column in obs)")
+    ap.add_argument("--labels", required=True, help="cell types of the spatial cells: labels.parquet with cell_id, celltype (e.g. from celldot-annotate)")
+    ap.add_argument("--output", required=True, help="output folder")
+    ap.add_argument("--ref-label-col", default="celltype", help="column of reference.obs with the cell type (default: celltype)")
+    ap.add_argument("--name", help="a label stored in the outputs and shown by the viewer (default: the input folder's name)")
+    ap.add_argument("--skip-prep", action="store_true", help="reuse the intermediates already in --output (run the solver only)")
+    adv = ap.add_argument_group("advanced (the defaults were used for every dataset in the paper)")
+    adv.add_argument("--qv", type=float, help="minimum transcript quality (default 20)")
+    adv.add_argument("--ell", type=float, help="distance scale of the transport cost, um (default 4.7)")
+    adv.add_argument("--z", type=float, help="width of the expression-capacity band (default 2)")
+    adv.add_argument("--pw", type=float, help="firmness of the capacity projection (default 0.3)")
+    adv.add_argument("--kappa", type=float, help="background capture efficiency (default 1.2)")
+    adv.add_argument("--niter", type=int, help="Sinkhorn sweeps (default 200)")
     args = ap.parse_args()
 
-    kw = dict(outs=args.outs, reference=args.reference, labels=args.labels, out=args.out,
-              ref_label=args.ref_label, dataset=args.dataset)
+    kw = dict(input=args.input, reference=args.reference, labels=args.labels, output=args.output, ref_label_col=args.ref_label_col, name=args.name)
     for flag, field in [("qv", "qv"), ("ell", "ELL"), ("z", "Z"), ("pw", "PW"), ("kappa", "KAPPA"), ("niter", "NITER")]:
         v = getattr(args, flag, None)
         if v is not None: kw[field] = v
-    os.makedirs(args.out, exist_ok=True)
+    os.makedirs(args.output, exist_ok=True)
     clean(CellDotConfig(**kw), do_prep=not args.skip_prep)
 
 

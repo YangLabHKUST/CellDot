@@ -1,6 +1,6 @@
 """Stage 1 — build the CellDot data contract from raw outs + reference + labels.
 
-Parameterised by ``CellDotConfig``. Labels are supplied externally (annotation is upstream). Writes into ``cfg.out``:
+Parameterised by ``CellDotConfig``. Labels are supplied externally (annotation is upstream). Writes into ``cfg.output``:
   rho_tilde.parquet            type x panel-gene row-normalised reference composition (the external prior)
   rho_tilde_corrected.parquet  RCTD-style gamma-corrected prior (USED BY THE MODEL; see below)
   cells_index.parquet          cell_id, type, x_centroid, y_centroid  (typed cells; the cell table)
@@ -43,7 +43,7 @@ def prep(cfg):
     cells = pd.read_parquet(cfg.CELLS)
     A_intra_all = float(np.maximum(cells["cell_area"].values.astype(float), 1.0).sum()) if "cell_area" in cells else 0.0  # ALL segmented cells
     cells["type"] = cells.cell_id.astype(str).map(type_of_cid)
-    ref_types = sorted(ref.obs[cfg.ref_label].astype(str).unique())
+    ref_types = sorted(ref.obs[cfg.ref_label_col].astype(str).unique())
     cells = cells[cells.type.isin(ref_types)].reset_index(drop=True)
     log(f"labelled cells: {len(cells)} | types ({cells.type.nunique()}): "
         + ", ".join(f"{t}:{n}" for t, n in cells.type.value_counts().items()))
@@ -52,7 +52,7 @@ def prep(cfg):
     ref = ref[:, [g for g in panel]].copy(); Xr = ref.X.tocsr().astype(np.float64)
     rowsum = np.asarray(Xr.sum(1)).ravel(); rowsum[rowsum == 0] = 1.0
     Xrn = sp.diags(1.0 / rowsum) @ Xr                                  # each ref cell -> composition over panel
-    rfine = ref.obs[cfg.ref_label].astype(str).values
+    rfine = ref.obs[cfg.ref_label_col].astype(str).values
     panel_mean = np.asarray(Xrn.mean(0)).ravel(); panel_mean /= max(panel_mean.sum(), 1e-12)
     spatial_counts = cells.type.value_counts()
     types_present = [t for t in ref_types
@@ -124,7 +124,7 @@ def prep(cfg):
     _delta = float(getattr(cfg, "BG_DILATE", 0.0)) if _is2 else 0.0     # post-dilation background ONLY on Xenium 2.0
     if _delta > 0:
         soup, A_extra_dbg, _dinfo = engine.dilated_background(
-            cfg.TX, os.path.join(cfg.outs, "cell_boundaries.parquet"), panel,
+            cfg.TX, os.path.join(cfg.input, "cell_boundaries.parquet"), panel,
             delta=_delta, qv_min=cfg.qv, unassigned=cfg.unassigned)
         soup = soup.astype(np.float64)
         log(f"BG_DILATE={_delta}µm (Xenium 2.0 seg): soup absorbed {_dinfo['absorbed_frac']*100:.1f}% "
@@ -141,7 +141,7 @@ def prep(cfg):
     N_NEG_CW = max(len(neg_cw), 1)
     f_bg = float((cells.control_codeword_counts.sum() / N_NEG_CW) * G / max(cells.transcript_counts.sum(), 1)) \
         if "control_codeword_counts" in cells and "transcript_counts" in cells else 0.00013
-    json.dump(dict(dataset=cfg.dataset, n_cells=int(len(ci)), n_types=int(len(types_present)), n_genes=int(G),
+    json.dump(dict(dataset=cfg.name, n_cells=int(len(ci)), n_types=int(len(types_present)), n_genes=int(G),
                    n_tx_total=int(n_tx_total), n_assigned=int(n_assigned), n_soup=int(n_soup),
                    A_tissue_mask=round(A_tissue_mask, 1), A_intra=round(A_intra, 1), A_extra=round(A_extra, 1),
                    N_NEG_CW=int(N_NEG_CW), N_GENES_PANEL=int(G), f_bg=round(f_bg, 6), types=types_present,
