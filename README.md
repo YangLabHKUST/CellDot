@@ -4,6 +4,13 @@
 
 <p align="center"><a href="https://viewer.celldot.online">Live demo</a> · <a href="#install">Install</a> · <a href="#run-celldot-in-three-steps">Run</a> · <a href="#outputs">Outputs</a> · <a href="#the-viewer">Viewer</a></p>
 
+<p align="center">
+<a href="https://github.com/YangLabHKUST/CellDot/stargazers"><img src="https://img.shields.io/github/stars/YangLabHKUST/CellDot?style=flat&logo=github&label=Stars" alt="GitHub stars"></a>
+<a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT"></a>
+<a href="https://doi.org/10.5281/zenodo.22489061"><img src="https://img.shields.io/badge/DOI-10.5281%2Fzenodo.22489061-blue.svg" alt="DOI"></a>
+<a href="https://viewer.celldot.online"><img src="https://img.shields.io/badge/viewer-celldot.online-8E6BBF.svg" alt="Interactive viewer"></a>
+</p>
+
 ---
 
 Segmentation errors and spillover put many detected molecules in the wrong cell. CellDot decides, for every
@@ -103,6 +110,14 @@ A = clean(CellDotConfig(input="outs/", reference="reference.h5ad", labels="label
 ```
 
 `celldot --help` lists the advanced parameters; they were left at their defaults for every dataset in the paper.
+
+## Reproducing the paper
+
+All the code and data needed to reproduce the main figures of the paper are in one Zenodo record,
+[10.5281/zenodo.22489061](https://doi.org/10.5281/zenodo.22489061): `repro.zip` holds one script per panel with the
+paper's own plotting style and the analysis scripts behind each panel, and `repro_data.zip` holds the data every
+script reads, including the CellDot runs of the four sections (the corrected cell × gene matrices, the fate of every
+molecule and the references).
 
 ## Citation
 

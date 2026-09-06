@@ -4,6 +4,7 @@ version = "0.2.0"
 description = "CellDot: reference-guided optimal-transport decontamination for imaging-based spatial transcriptomics"
 readme = "README.md"
 requires-python = ">=3.10"
+license = {text = "MIT"}
 dependencies = [
     "numpy",
     "scipy",
