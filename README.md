@@ -27,7 +27,9 @@ cd CellDot
 pip install -e ".[viewer,annotate]"
 ```
 
-Python ≥ 3.10. A CUDA GPU is used when present; the CPU gives the same result, more slowly.
+Python ≥ 3.10. A CUDA GPU is recommended (the CPU gives the same result, much more slowly). Install PyTorch first,
+choosing the build that matches your CUDA version at [pytorch.org](https://pytorch.org/get-started/locally/); the
+`pip install` above then keeps that build.
 
 ## Run CellDot in three steps
 
