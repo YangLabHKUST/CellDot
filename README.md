@@ -8,6 +8,7 @@
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT"></a>
 <a href="https://doi.org/10.5281/zenodo.22489061"><img src="https://img.shields.io/badge/DOI-10.5281%2Fzenodo.22489061-blue.svg" alt="DOI"></a>
 <a href="https://viewer.celldot.online"><img src="https://img.shields.io/badge/viewer-celldot.online-8E6BBF.svg" alt="Interactive viewer"></a>
+<a href="https://github.com/YangLabHKUST/CellDot/stargazers"><img src="https://img.shields.io/github/stars/YangLabHKUST/CellDot?style=flat&logo=github&color=F5C518" alt="GitHub stars"></a>
 </p>
 
 ---
