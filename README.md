@@ -115,11 +115,12 @@ A = clean(CellDotConfig(input="outs/", reference="reference.h5ad", labels="label
 
 ## Reproducing the paper
 
-All the code and data needed to reproduce the main figures of the paper are in one Zenodo record,
-[10.5281/zenodo.22489061](https://doi.org/10.5281/zenodo.22489061): `repro.zip` holds one script per panel with the
-paper's own plotting style and the analysis scripts behind each panel, and `repro_data.zip` holds the data every
-script reads, including the CellDot runs of the four sections (the corrected cell × gene matrices, the fate of every
-molecule and the references).
+The code that draws the main figures is in the Zenodo record
+[10.5281/zenodo.22489061](https://doi.org/10.5281/zenodo.22489061), as `repro.zip`: one script per panel with the
+paper's own plotting style, and the analysis scripts behind each panel. The data those scripts read is a companion
+archive, [`repro_data.zip`](https://drive.google.com/file/d/19WlXPZeb01dT3zn8moi17B8KPxiRdZY9/view?usp=drive_link) (14 GB) on
+Google Drive, which includes the CellDot runs of the four sections (the corrected cell × gene matrices, the fate of
+every molecule and the references). Unpack `repro_data` next to `repro` and run each script from its own folder.
 
 ## Citation
 
